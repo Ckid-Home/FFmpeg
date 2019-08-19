@@ -503,9 +503,11 @@ int ff_h263_decode_frame(AVCodecContext *avctx, AVFrame *pict,
     }
 
     if (!h->c.context_initialized) {
+        ff_set_dimensions(avctx, s->width, s->height);
         avctx->pix_fmt = h263_get_format(avctx);
         if ((ret = ff_mpv_common_init(s)) < 0)
             return ret;
+        s->context_reinit = 1;
     }
 
     avctx->has_b_frames = !h->c.low_delay;

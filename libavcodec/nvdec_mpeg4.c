@@ -69,9 +69,11 @@ static int nvdec_mpeg4_start_frame(AVCodecContext *avctx,
 
             .video_object_layer_width     = s->width,
             .video_object_layer_height    = s->height,
-            .vop_time_increment_bitcount  = m->time_increment_bits,
+            .vop_time_increment_bitcount  = avctx->codec->id == AV_CODEC_ID_MPEG4 ?
+                                            m->time_increment_bits : 0,
             .top_field_first              = s->top_field_first,
-            .resync_marker_disable        = !m->resync_marker,
+            .resync_marker_disable        = avctx->codec->id == AV_CODEC_ID_MPEG4 ?
+                                            !m->resync_marker : 0,
             .quant_type                   = m->mpeg_quant,
             .quarter_sample               = s->quarter_sample,
             .short_video_header           = avctx->codec->id == AV_CODEC_ID_H263,
@@ -87,7 +89,8 @@ static int nvdec_mpeg4_start_frame(AVCodecContext *avctx,
             .trd                          = { s->pp_time, s->pp_field_time >> 1 },
             .trb                          = { s->pb_time, s->pb_field_time >> 1 },
 
-            .gmc_enabled                  = s->pict_type == AV_PICTURE_TYPE_S &&
+            .gmc_enabled                  = avctx->codec->id == AV_CODEC_ID_MPEG4 &&
+                                            s->pict_type == AV_PICTURE_TYPE_S &&
                                             m->vol_sprite_usage == GMC_SPRITE,
         }
     };
