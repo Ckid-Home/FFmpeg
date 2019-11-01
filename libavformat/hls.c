@@ -84,6 +84,7 @@ struct segment {
     uint8_t iv[16];
     /* associated Media Initialization Section, treated as a segment */
     struct segment *init_section;
+    int is_discont;
 };
 
 struct rendition;
@@ -830,7 +831,7 @@ static int test_segment(AVFormatContext *s, const AVInputFormat *in_fmt, struct 
 static int parse_playlist(HLSContext *c, const char *url,
                           struct playlist *pls, AVIOContext *in)
 {
-    int ret = 0, is_segment = 0, is_variant = 0;
+    int ret = 0, is_segment = 0, is_variant = 0, is_distcont = 0;
     int64_t duration = 0;
     enum KeyType key_type = KEY_NONE;
     uint8_t iv[16] = "";
@@ -1046,6 +1047,9 @@ static int parse_playlist(HLSContext *c, const char *url,
                 ret = AVERROR_INVALIDDATA;
                 goto fail;
             }
+        } else if (av_strstart(line, "#EXT-X-DISCONTINUITY", NULL)) {
+            is_distcont = 1;
+            av_log(c->ctx, AV_LOG_INFO, "Discontinuous segment detected.\n");
         } else if (av_strstart(line, "#", NULL)) {
             av_log(c->ctx, AV_LOG_VERBOSE, "Skip ('%s')\n", line);
             continue;
@@ -1067,6 +1071,7 @@ static int parse_playlist(HLSContext *c, const char *url,
                     ret = AVERROR(ENOMEM);
                     goto fail;
                 }
+                seg->is_discont= is_distcont;
                 if (has_iv) {
                     memcpy(seg->iv, iv, sizeof(iv));
                 } else {
