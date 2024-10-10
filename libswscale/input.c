@@ -710,6 +710,80 @@ static void read_vuya_A_c(uint8_t *dst, const uint8_t *src, const uint8_t *unuse
         dst[i] = src[i * 4 + 3];
 }
 
+static void read_ayuv_UV_c(uint8_t *dstU, uint8_t *dstV, const uint8_t *unused0, const uint8_t *src,
+                           const uint8_t *unused1, int width, uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++) {
+        dstU[i] = src[i * 4 + 2];
+        dstV[i] = src[i * 4 + 3];
+    }
+}
+
+static void read_ayuv_Y_c(uint8_t *dst, const uint8_t *src, const uint8_t *unused0, const uint8_t *unused1, int width,
+                          uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++)
+        dst[i] = src[i * 4 + 1];
+}
+
+static void read_ayuv_A_c(uint8_t *dst, const uint8_t *src, const uint8_t *unused0, const uint8_t *unused1, int width,
+                          uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++)
+        dst[i] = src[i * 4];
+}
+
+static void read_uyva_UV_c(uint8_t *dstU, uint8_t *dstV, const uint8_t *unused0, const uint8_t *src,
+                           const uint8_t *unused1, int width, uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++) {
+        dstU[i] = src[i * 4];
+        dstV[i] = src[i * 4 + 2];
+    }
+}
+
+static void vyuToY_c(uint8_t *dst, const uint8_t *src, const uint8_t *unused0, const uint8_t *unused1, int width,
+                     uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++)
+        dst[i] = src[i * 3 + 1];
+}
+
+static void vyuToUV_c(uint8_t *dstU, uint8_t *dstV, const uint8_t *unused0, const uint8_t *src,
+                      const uint8_t *unused1, int width, uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++) {
+        dstU[i] = src[i * 3 + 2];
+        dstV[i] = src[i * 3];
+    }
+}
+
+static void read_v30xle_Y_c(uint8_t *dst, const uint8_t *src, const uint8_t *unused0, const uint8_t *unused1, int width,
+                               uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++)
+        AV_WN16(dst + i * 2, (AV_RL32(src + i * 4) >> 12) & 0x3FFu);
+}
+
+
+static void read_v30xle_UV_c(uint8_t *dstU, uint8_t *dstV, const uint8_t *unused0, const uint8_t *src,
+                               const uint8_t *unused1, int width, uint32_t *unused2, void *opq)
+{
+    int i;
+    for (i = 0; i < width; i++) {
+        unsigned int uv = AV_RL32(src + i * 4);
+        AV_WN16(dstU + i * 2, (uv >>  2) & 0x3FFu);
+        AV_WN16(dstV + i * 2, (uv >> 22) & 0x3FFu);
+    }
+}
+
 static void read_xv30le_Y_c(uint8_t *dst, const uint8_t *src, const uint8_t *unused0, const uint8_t *unused1, int width,
                                uint32_t *unused2, void *opq)
 {
@@ -1306,6 +1380,9 @@ av_cold void ff_sws_init_input_funcs(SwsContext *c,
     case AV_PIX_FMT_UYVY422:
         *chrToYV12 = uyvyToUV_c;
         break;
+    case AV_PIX_FMT_VYU444:
+        *chrToYV12 = vyuToUV_c;
+        break;
     case AV_PIX_FMT_NV12:
     case AV_PIX_FMT_NV16:
     case AV_PIX_FMT_NV24:
@@ -1444,8 +1521,17 @@ av_cold void ff_sws_init_input_funcs(SwsContext *c,
     case AV_PIX_FMT_XV30LE:
         *chrToYV12 = read_xv30le_UV_c;
         break;
+    case AV_PIX_FMT_V30XLE:
+        *chrToYV12 = read_v30xle_UV_c;
+        break;
+    case AV_PIX_FMT_AYUV:
+        *chrToYV12 = read_ayuv_UV_c;
+        break;
     case AV_PIX_FMT_AYUV64LE:
         *chrToYV12 = read_ayuv64le_UV_c;
+        break;
+    case AV_PIX_FMT_UYVA:
+        *chrToYV12 = read_uyva_UV_c;
         break;
     case AV_PIX_FMT_XV36LE:
         *chrToYV12 = read_xv36le_UV_c;
@@ -1845,6 +1931,13 @@ av_cold void ff_sws_init_input_funcs(SwsContext *c,
     case AV_PIX_FMT_XV30LE:
         *lumToYV12 = read_xv30le_Y_c;
         break;
+    case AV_PIX_FMT_V30XLE:
+        *lumToYV12 = read_v30xle_Y_c;
+        break;
+    case AV_PIX_FMT_AYUV:
+    case AV_PIX_FMT_UYVA:
+        *lumToYV12 = read_ayuv_Y_c;
+        break;
     case AV_PIX_FMT_AYUV64LE:
         *lumToYV12 = read_ayuv64le_Y_c;
         break;
@@ -1858,6 +1951,9 @@ av_cold void ff_sws_init_input_funcs(SwsContext *c,
         break;
     case AV_PIX_FMT_UYVY422:
         *lumToYV12 = uyvyToY_c;
+        break;
+    case AV_PIX_FMT_VYU444:
+        *lumToYV12 = vyuToY_c;
         break;
     case AV_PIX_FMT_BGR24:
         *lumToYV12 = bgr24ToY_c;
@@ -2029,7 +2125,11 @@ av_cold void ff_sws_init_input_funcs(SwsContext *c,
             *alpToYV12 = read_ya16be_alpha_c;
             break;
         case AV_PIX_FMT_VUYA:
+        case AV_PIX_FMT_UYVA:
             *alpToYV12 = read_vuya_A_c;
+            break;
+        case AV_PIX_FMT_AYUV:
+            *alpToYV12 = read_ayuv_A_c;
             break;
         case AV_PIX_FMT_AYUV64LE:
             *alpToYV12 = read_ayuv64le_A_c;
