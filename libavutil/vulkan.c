@@ -883,10 +883,6 @@ int ff_vk_alloc_mem(FFVulkanContext *s, VkMemoryRequirements *req,
         .pNext           = alloc_extension,
     };
 
-    /* Align if we need to */
-    if ((req_flags != UINT32_MAX) && req_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-        req->size = FFALIGN(req->size, s->props.properties.limits.minMemoryMapAlignment);
-
     alloc_info.allocationSize = req->size;
 
     /* The vulkan spec requires memory types to be sorted in the "optimal"
@@ -939,8 +935,9 @@ int ff_vk_create_buf(FFVulkanContext *s, FFVkBuffer *buf, size_t size,
         .pNext       = pNext,
         .usage       = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .size        = size, /* Gets FFALIGNED during alloc if host visible
-                                but should be ok */
+        .size        = flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ?
+                       FFALIGN(size, s->props.properties.limits.minMemoryMapAlignment) :
+                       size,
     };
 
     VkMemoryAllocateFlagsInfo alloc_flags = {
@@ -1328,6 +1325,7 @@ const char *ff_vk_shader_rep_fmt(enum AVPixelFormat pix_fmt,
     case AV_PIX_FMT_RGB48:
     case AV_PIX_FMT_RGBA64:
     case AV_PIX_FMT_Y212:
+    case AV_PIX_FMT_Y216:
     case AV_PIX_FMT_XV36: {
         const char *rep_tab[] = {
             [FF_VK_REP_NATIVE] = "rgba16ui",
