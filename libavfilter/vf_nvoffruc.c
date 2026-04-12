@@ -142,9 +142,21 @@ static int blend_frames(AVFilterContext *ctx, int64_t work_pts)
     NvOFFRUC_PROCESS_OUT_PARAMS out = {0,};
     NvOFFRUC_STATUS status;
 
-    int num_channels = s->format == AV_PIX_FMT_NV12 ? 1 : 4;
+    int num_channels;
     int ret;
     uint64_t ignored;
+
+    switch(s->format) {
+      case AV_PIX_FMT_NV12:
+        num_channels = 1;
+        break;
+      case AV_PIX_FMT_P010:
+        num_channels = 2;
+        break;
+      default:
+        num_channels = 4;
+        break;
+    }
 
     // get work-space for output frame
     s->work = ff_get_video_buffer(outlink, outlink->w, outlink->h);
@@ -421,6 +433,7 @@ static av_cold void uninit(AVFilterContext *ctx)
 
 static const enum AVPixelFormat supported_formats[] = {
     AV_PIX_FMT_NV12,
+    AV_PIX_FMT_P010,
     // Actually any single plane, four channel, 8bit format will work.
     AV_PIX_FMT_RGB0,
     AV_PIX_FMT_BGR0,
@@ -668,9 +681,29 @@ static int config_output(AVFilterLink *outlink)
         return ret;
 
     desc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
-    desc.Height = inlink->h * (s->format == AV_PIX_FMT_NV12 ? 1.5 : 1);
+    switch (s->format) {
+      case AV_PIX_FMT_NV12:
+        desc.Height = inlink->h * 1.5;
+        break;
+      case AV_PIX_FMT_P010:
+        desc.Height = inlink->h * 3;
+        break;
+      default:
+        desc.Height = inlink->h * 1;
+        break;
+    }
     desc.Width = inlink->w;
-    desc.NumChannels = s->format == AV_PIX_FMT_NV12 ? 1 : 4;
+    switch (s->format) {
+      case AV_PIX_FMT_NV12:
+        desc.NumChannels = 1;
+        break;
+      case AV_PIX_FMT_P010:
+        desc.NumChannels = 2;
+        break;
+      default:
+        desc.NumChannels = 4;
+        break;
+    }
     ret = CHECK_CU(cu->cuArrayCreate(&s->c0, &desc));
     if (ret < 0)
         goto exit;
@@ -685,7 +718,17 @@ static int config_output(AVFilterLink *outlink)
     create_param.uiHeight = inlink->h;
     create_param.pDevice = NULL;
     create_param.eResourceType = CudaResource;
-    create_param.eSurfaceFormat = s->format == AV_PIX_FMT_NV12 ? NV12Surface : ARGBSurface;
+    switch (s->format) {
+      case AV_PIX_FMT_NV12:
+        create_param.eSurfaceFormat = NV12Surface;
+        break;
+      case AV_PIX_FMT_P010:
+        create_param.eSurfaceFormat = P010Surface;
+        break;
+      default:
+        create_param.eSurfaceFormat = ARGBSurface;
+        break;
+    }
     create_param.eCUDAResourceType = CudaResourceCuArray;
     status = s->NvOFFRUCCreate(&create_param, &s->fruc);
     if (status) {

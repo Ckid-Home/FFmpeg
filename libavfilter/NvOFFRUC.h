@@ -138,6 +138,7 @@ enum NvOFFRUCSurfaceFormat
     UndefinedSurfaceType = -1,
     NV12Surface = 0,
     ARGBSurface = 1,
+    P010Surface = 2,
 };
 
 enum NvOFFRUCInputFileType
