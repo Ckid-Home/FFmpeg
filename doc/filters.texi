@@ -27831,6 +27831,69 @@ scale_cuda=passthrough=0
 @end example
 @end itemize
 
+@section smoothmotion_cuda
+
+Double the frame rate with NVIDIA Smooth Motion, the frame generator built into
+the NVIDIA driver, running its kernels directly on CUDA.
+
+An optical-flow network predicts a flow field between each pair of consecutive
+frames and warps them to the midpoint, so one new frame is inserted between
+every two input frames and the output frame rate is exactly twice the input.
+The network emits the temporal midpoint only, so there is no ratio to choose.
+
+Unlike the super-resolution networks the kernels are fully resolution
+parametric -- the same graph runs at the native frame size, without tiling and
+without resampling to a fixed internal resolution -- so any input size works.
+
+It accepts the following options:
+
+@table @option
+@item interp_start
+@item interp_end
+Bounds of the interpolation region, @code{0} to @code{255}.  Defaults
+@code{15} and @code{240}.
+
+@item packed
+Emit the network's packed output directly instead of converting it back to the
+input layout.  Default @code{false}.
+
+@item data
+Directory holding the extracted per-kernel fat binaries (in a @file{fatbins}
+subdirectory) and @file{weights.bin}.
+@end table
+
+@subsection Supported formats
+
+A wide set of packed and planar CUDA formats, because the filter carries its own
+CUDA kernels to pack whatever it is given into the packed 4:4:4 the network
+samples, and to unpack the result:
+
+@table @asis
+@item Packed RGB
+@code{rgb0}, @code{bgr0}, @code{rgba}, @code{bgra} (8-bit), @code{rgba64}
+(16-bit), and @code{x2rgb10le}/@code{x2bgr10le} (packed 10-bit).  Emitted
+unchanged.
+
+@item Semi-planar and planar YUV
+@code{nv12}, @code{nv16}, @code{yuv420p}, @code{yuv444p} (8-bit, emitted as
+@code{yuv444p}); @code{p010}, @code{p016}, @code{p210}, @code{p212},
+@code{p216}, @code{yuv444p16}, @code{yuv444p10msb}, @code{yuv444p12msb}
+(higher bit depth, emitted as @code{yuv444p16}).
+
+@item Packed 4:4:4 YUV
+@code{vuyx}, @code{vuya}, @code{uyva}, @code{ayuv} (8-bit), @code{xv48le},
+@code{ayuv64le} (16-bit) and @code{xv30le} (packed 10-bit).  Chroma is already
+full resolution, so these skip the de-interleave entirely.
+@end table
+
+Chroma is upsampled to 4:4:4 on the way in, so a 4:2:0 or 4:2:2 input comes back
+as 4:4:4; the alpha or padding channel of a packed format is ignored.
+
+The kernels and weights are extracted from the proprietary NVIDIA driver and are
+@emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the Smooth Motion data is
+installed, and @option{data} defaults to that package's data directory.
+
 @section thumbnail_cuda
 
 Select the most representative frame in a given sequence of consecutive frames using CUDA.

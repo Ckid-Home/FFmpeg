@@ -485,6 +485,7 @@ extern const FFFilter ff_vf_signalstats;
 extern const FFFilter ff_vf_signature;
 extern const FFFilter ff_vf_siti;
 extern const FFFilter ff_vf_smartblur;
+extern const FFFilter ff_vf_smoothmotion_cuda;
 extern const FFFilter ff_vf_sobel;
 extern const FFFilter ff_vf_sobel_opencl;
 extern const FFFilter ff_vf_split;
