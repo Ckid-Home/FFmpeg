@@ -27863,6 +27863,73 @@ Preserve landscape geometry (when @var{width} >= @var{height}).
 
 @end table
 
+@anchor{truehdr_cuda}
+@section truehdr_cuda
+
+Expand SDR to HDR with NVIDIA RTX TrueHDR, running the NGX SDK's inverse
+tone-mapping network directly on CUDA.
+
+The output resolution equals the input; only the tone curve and colour space
+change.  The neural core runs at an internal resolution derived from the input
+aspect ratio, and the tunables below are applied by the final kernel, so they
+cost nothing to change.
+
+There is a second TrueHDR network in the NVIDIA driver, which
+@code{truehdr_drv_cuda} drives.  It is a different and considerably brighter
+curve.
+
+It accepts the following options:
+
+@table @option
+@item contrast
+@item saturation
+Contrast and saturation, @code{0} to @code{200}.  Both default @code{100}, the
+neutral value.
+
+@item middlegray
+Middle-gray reference, @code{10} to @code{100}.  Default @code{50}.  This is
+the main exposure lever: it sets what input level maps to the middle of the
+output range, so lowering it darkens midtones and raising it lifts them.
+
+@item maxluminance
+Peak luminance of the target display in nits, @code{400} to @code{2000}.
+Default @code{1000}.
+
+@item format
+Output pixel format; see below.
+
+@item data
+Directory holding the extracted cubins and @file{weights.bin}.
+@end table
+
+@subsection Output colour spaces
+
+The two output formats are different @strong{colour spaces}, not just two bit
+depths, and the filter tags the output frame accordingly:
+
+@table @option
+@item rgbaf16le
+The default.  scRGB: linear light, Rec.709 primaries, with @code{1.0} meaning
+80 nits.  This is the Windows HDR swapchain format.
+
+@item x2bgr10le
+HDR10 / BT.2100: PQ (SMPTE ST.2084) transfer, Rec.2020 primaries.  Already
+display-ready, so feeding an HDR10 encoder needs only the RGB to YUV matrix, no
+tone or gamut conversion.
+@end table
+
+@subsection Supported formats
+
+Input is 8-bit R-first packed RGB (@code{rgb0} or @code{rgba}) -- the ordinary
+SDR case -- or 10-bit @code{x2bgr10le}.  TrueHDR has no R@math{<->}B swap path,
+so B-first 8-bit input has to be converted first.  The input is read through a
+format-agnostic texture, which normalizes any of them.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the TrueHDR data is installed, and
+@option{data} defaults to that package's data directory.
+
 @anchor{vsr_cuda}
 @section vsr_cuda
 
