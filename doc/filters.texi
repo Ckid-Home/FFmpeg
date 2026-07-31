@@ -27483,6 +27483,41 @@ JPEG (full) range
 
 @end table
 
+@section isr_cuda
+
+Upscale with NVIDIA's NGX Image Super Resolution network, running it directly
+on CUDA.
+
+This is a still-image upscaler, not one of the video super-resolution networks
+that @ref{vsr_cuda} and @code{dlpp_drv_cuda} drive.  It is fidelity-oriented and
+considerably heavier: the network runs on overlapping 256x256 tiles which are
+stitched back together, so cost grows with area rather than with a per-frame
+fixed graph.  It has no resampling path, so the output is always exactly
+@option{scale} times the input; there is no @option{w}/@option{h} pair.
+
+It accepts the following options:
+
+@table @option
+@item scale
+Integer upscale factor: @code{2}, @code{4} or @code{8}.  Default @code{2}.
+Each is a separate network; a factor the installed data has no network for is
+rejected at configuration time.
+
+@item data
+Directory holding the extracted cubins, fat binaries and per-scale weights.
+@end table
+
+@subsection Supported formats
+
+8-bit R-first packed RGB CUDA frames only: @code{rgba} or @code{rgb0}, in and
+out.  The captured graph has a single format enum and no R@math{<->}B swap, so
+a B-first or high-bit-depth input has to be converted first.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the ISR data is installed, and
+@option{data} defaults to that package's data directory.
+
 @anchor{overlay_cuda}
 @section overlay_cuda
 

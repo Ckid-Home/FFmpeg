@@ -340,6 +340,7 @@ extern const FFFilter ff_vf_inflate;
 extern const FFFilter ff_vf_interlace;
 extern const FFFilter ff_vf_interlace_vulkan;
 extern const FFFilter ff_vf_interleave;
+extern const FFFilter ff_vf_isr_cuda;
 extern const FFFilter ff_vf_kerndeint;
 extern const FFFilter ff_vf_kirsch;
 extern const FFFilter ff_vf_lagfun;
