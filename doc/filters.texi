@@ -27483,6 +27483,77 @@ JPEG (full) range
 
 @end table
 
+@section dlpp_drv_cuda
+
+Upscale video with the NVIDIA driver's DLPP super-resolution network, running
+it directly on CUDA.
+
+This is one of three super-resolution filters and they drive three different
+networks: @ref{vsr_cuda} runs the NGX SDK's, @ref{vsr_drv_cuda} runs the
+driver's AIVP plugin, and this one drives DLPP directly.  DLPP exposes two
+high-quality models the AIVP path does not reach.  They do not produce the same
+picture, so it is worth trying more than one.
+
+It accepts the following options:
+
+@table @option
+@item quality
+Which model to run: @code{1} base, @code{2} deeper base, @code{3} and @code{4}
+the high-quality models.  Default @code{1}.
+
+@item scale
+Native integer upscale factor for @option{quality} @code{3} and @code{4}:
+@code{2}, @code{3} or @code{4}.  Default @code{2}.  Ignored by the base models,
+which always super-resolve 2x internally.
+
+@item w
+@item h
+Output width and height, as expressions (as in @ref{scale}); the variables
+@var{iw}/@var{in_w} and @var{ih}/@var{in_h} hold the input size.  Unset (the
+default) means the native factor times the input -- @option{scale} for the
+high-quality models, 2x for the base models.  Any other size resamples the
+network's native result to the requested rectangle with a bicubic compose.
+
+@item format
+Output pixel format.  Empty (the default) keeps the input format.
+
+@item wipe
+Split-screen comparison wipe, @code{0} to @code{1}.  Default @code{0}, the real
+full-resolution output.  Above @code{0}, the leftmost fraction of the frame
+shows the plain bicubic reference instead of the network's output -- the
+before/after slider from NVIDIA's own UI.  A diagnostic control, not a quality
+knob.
+
+@item data
+Directory holding the extracted cubins and the shared @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.
+@end table
+
+@subsection Supported formats
+
+Packed RGB formats are accepted for both input and output: @code{rgb0},
+@code{rgba}, @code{bgr0}, @code{bgra} (8-bit) and @code{rgba64le} (16-bit).
+Input and output formats are chosen independently (see the @option{format}
+option).  16-bit carries the network's full internal precision and avoids
+banding.
+
+The kernels branch on a format selector that exposes an R@math{<->}B swap only
+on the 8-bit path, so the B-first @code{bgr0}/@code{bgra} are handled natively.
+That swap does not exist on the high-bit-depth path, which packs in array-native
+order, so 16-bit is R-first only (@code{rgba64le}).
+
+This filter does @strong{not} do YUV@math{<->}RGB conversion or tone mapping;
+see @ref{vsr_cuda} for the @code{libplacebo} pipeline that feeds these filters
+from real video and for the hardware decode/encode combinations.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the DLPP data is installed, and
+@option{data} defaults to that package's data directory.
+
 @section isr_cuda
 
 Upscale with NVIDIA's NGX Image Super Resolution network, running it directly
