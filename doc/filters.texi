@@ -28014,6 +28014,83 @@ ingest @strong{YCbCr only}.  The Vulkan encoders reject every RGB pixel format
 likewise takes @code{nv12}/@code{p010}, so @code{vsr_cuda}'s RGB output cannot be
 fed to an encoder directly.
 
+@anchor{vsr_drv_cuda}
+@section vsr_drv_cuda
+
+Upscale video with the NVIDIA driver's RTX Video Super Resolution network,
+running it directly on CUDA.
+
+This is the driver's AIVP plugin, not the NGX SDK network that @ref{vsr_cuda}
+drives -- a newer and heavier network over the same underlying kernels.  The
+two do not produce the same picture, and neither is uniformly better, so it is
+worth comparing them on your own content.  @code{dlpp_drv_cuda} is a third
+option again.
+
+The graph super-resolves 2x internally.  An exact isotropic 2x output stores
+directly; any other size resamples that result to the requested rectangle with
+a bicubic compose.
+
+It accepts the following options:
+
+@table @option
+@item quality
+Which of the driver's four networks to run, @code{1} to @code{4}.  Default
+@code{1}.
+
+They are @strong{not} ordered by strength.  By fidelity, from the most faithful
+to the most aggressive at synthesizing detail, the order is @code{1}, @code{3},
+@code{4}, @code{2}.  The default @code{1} is the least grainy and the closest
+to a faithful upscale; @code{2} invents the most.
+
+@item detail
+@item smooth
+Perceptual pre-processing of the input, each @code{0} to @code{16} and
+defaulting to @code{0}, which is neutral and byte-exact against the driver.
+@option{detail} raises high-frequency content and @option{smooth} lowers it --
+an unsharp/denoise pair applied before the network.  They tune the look, not
+the fidelity.
+
+@item w
+@item h
+Output width and height, as expressions (as in @ref{scale}); the variables
+@var{iw}/@var{in_w} and @var{ih}/@var{in_h} hold the input size.  Defaults
+@code{iw*2} and @code{ih*2}.
+
+@item format
+Output pixel format.  Empty (the default) keeps the input format.
+
+@item data
+Directory holding the extracted cubins and the shared @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.  Turing and older
+cannot run this network at all -- its convolution kernels need sm_80 tensor
+cores -- and are refused unconditionally.
+@end table
+
+@subsection Supported formats
+
+Packed RGB formats are accepted for both input and output: @code{rgb0},
+@code{rgba}, @code{bgr0}, @code{bgra} (8-bit) and @code{rgba64le} (16-bit).
+Input and output formats are chosen independently (see the @option{format}
+option).  16-bit carries the network's full internal precision and avoids
+banding.
+
+The kernels branch on a format selector that exposes an R@math{<->}B swap only
+on the 8-bit path, so the B-first @code{bgr0}/@code{bgra} are handled natively.
+That swap does not exist on the high-bit-depth path, which packs in array-native
+order, so 16-bit is R-first only (@code{rgba64le}).
+
+This filter does @strong{not} do YUV@math{<->}RGB conversion or tone mapping;
+see @ref{vsr_cuda} for the @code{libplacebo} pipeline that feeds these filters
+from real video and for the hardware decode/encode combinations.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the driver VSR data is installed, and
+@option{data} defaults to that package's data directory.
+
 @section yadif_cuda
 
 Deinterlace the input video using the @ref{yadif} algorithm, but implemented
