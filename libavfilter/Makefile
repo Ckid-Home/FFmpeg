@@ -554,6 +554,7 @@ OBJS-$(CONFIG_TRANSPOSE_VT_FILTER)           += vf_transpose_vt.o
 OBJS-$(CONFIG_TRANSPOSE_VULKAN_FILTER)       += vf_transpose_vulkan.o vulkan.o vulkan_filter.o
 OBJS-$(CONFIG_TRIM_FILTER)                   += trim.o
 OBJS-$(CONFIG_TRUEHDR_CUDA_FILTER)           += vf_truehdr_cuda.o rtx_cuda.o
+OBJS-$(CONFIG_TRUEHDR_DRV_CUDA_FILTER)       += vf_truehdr_drv_cuda.o rtx_cuda.o
 OBJS-$(CONFIG_UNPREMULTIPLY_FILTER)          += vf_premultiply.o framesync.o
 OBJS-$(CONFIG_UNSHARP_FILTER)                += vf_unsharp.o
 OBJS-$(CONFIG_UNSHARP_OPENCL_FILTER)         += vf_unsharp_opencl.o opencl.o \

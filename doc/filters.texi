@@ -27930,6 +27930,81 @@ are @emph{not} shipped: the filter is only built when an
 @code{nvidia-video-filters} package carrying the TrueHDR data is installed, and
 @option{data} defaults to that package's data directory.
 
+@section truehdr_drv_cuda
+
+Expand SDR to HDR with the NVIDIA driver's TrueHDR network, running it directly
+on CUDA.
+
+This is the driver's own inverse tone mapping, not the NGX SDK network that
+@ref{truehdr_cuda} drives.  As there, the output resolution equals the input.
+The curve is much brighter than the SDK one, which is what @option{preset} and
+the tunables exist to manage.
+
+It accepts the following options:
+
+@table @option
+@item tonemap
+Tone-map algorithm: @code{0} is the captured bypass, a near-linear curve that
+reads only @option{maxluminance}; @code{1} is the driver's adaptive inverse tone
+map, which additionally consumes a live per-frame scene statistic and is shaped
+by the tunables below.  @code{-1}, the default, is auto and resolves to
+@code{1}.  @code{0} is byte-exact against the driver but blows out midtones, so
+it is mostly of interest for verification.
+
+@item preset
+A named set of tunables.  @code{none} (the default) uses them as given;
+@code{sdk} pulls this network's curve onto @ref{truehdr_cuda}'s, for a
+like-for-like comparison between the two.  A preset only fills in the tunables
+left at auto (@code{-1}), so anything passed explicitly alongside it wins.
+
+@item maxluminance
+Peak luminance of the target display in nits, @code{400} to @code{2000}.
+Default @code{1000}.  The only tunable @code{tonemap=0} reads.
+
+@item contrast
+Adaptive tone-curve contrast, @code{0.1} to @code{4}.  Default @code{1}.
+
+@item saturation
+Adaptive chroma saturation, @code{0} to @code{4}.  Default @code{1} (neutral).
+
+@item middlegray
+Adaptive middle-gray reference, @code{1} to @code{100}.  Default @code{-1},
+auto: @code{50}, or the value @option{preset} names.  As on @ref{truehdr_cuda}
+this is the main exposure lever.
+
+@item exposure
+Highlight-expansion gain, @code{1} to @code{1000}.  Default @code{-1}, auto:
+@code{200}, or the value @option{preset} names.
+
+@item gamma
+Per-channel output gamma, @code{0.25} to @code{4}.  Default @code{1} (off).
+
+@item format
+Output pixel format: @code{rgbaf16le} (the default) or @code{x2bgr10le}.  These
+are two different colour spaces; see @ref{truehdr_cuda} for what each one means.
+
+@item gamut
+For @code{x2bgr10le} output: @code{1} (the default) converts to Rec.2020
+primaries for true HDR10, @code{0} keeps Rec.709.
+
+@item data
+Directory holding the extracted cubins and @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.
+@end table
+
+@subsection Supported formats
+
+Input is 8-bit R-first packed RGB, @code{rgb0} or @code{rgba}.  Output is
+@code{rgbaf16le} or @code{x2bgr10le} as selected by @option{format}.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the driver TrueHDR data is installed, and
+@option{data} defaults to that package's data directory.
+
 @anchor{vsr_cuda}
 @section vsr_cuda
 

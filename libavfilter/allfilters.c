@@ -522,6 +522,7 @@ extern const FFFilter ff_vf_transpose_vt;
 extern const FFFilter ff_vf_transpose_vulkan;
 extern const FFFilter ff_vf_trim;
 extern const FFFilter ff_vf_truehdr_cuda;
+extern const FFFilter ff_vf_truehdr_drv_cuda;
 extern const FFFilter ff_vf_unpremultiply;
 extern const FFFilter ff_vf_unsharp;
 extern const FFFilter ff_vf_unsharp_opencl;
