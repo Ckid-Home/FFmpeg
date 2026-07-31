@@ -27757,6 +27757,228 @@ Preserve landscape geometry (when @var{width} >= @var{height}).
 
 @end table
 
+@anchor{vsr_cuda}
+@section vsr_cuda
+
+Upscale video with NVIDIA RTX Video Super Resolution, running the extracted
+VSR network directly on CUDA (no @code{nvngx_vsr.dll} at run time).
+
+The network operates on packed 32-bit-or-wider @strong{RGB} CUDA frames, so it
+is colorspace-agnostic: feed it linear or gamma RGB in whatever primaries you
+like, and it processes the pixels as given.
+
+An output that is exactly the network's native factor takes a fast direct store;
+any other size (non-integer, anisotropic, or downscale) resamples the native
+result with a bicubic compose.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the VSR data is installed, and
+@option{data} defaults to that package's data directory.
+
+It accepts the following options:
+
+@table @option
+@item quality
+Which model to run; see below.  Default @code{1}.
+
+@item scale
+Native integer upscale factor for the scale-adaptive @code{high} and
+@code{ultra} models: @code{0} (the default), @code{2}, @code{3} or @code{4}.
+Ignored by every other model.
+
+@code{0} derives the factor from the requested output size.  Setting it forces
+that head and defaults the output to that factor times the input, so
+@option{scale} together with @option{w}/@option{h} runs the forced network and
+then resamples its result to the rectangle you asked for -- @code{scale=4} with
+a 1080p output runs the 4x network and downscales, rather than the 3x the ratio
+alone would have picked.
+
+@item w
+@item h
+Output width and height, as expressions (as in @ref{scale}); the variables
+@var{iw}/@var{in_w} and @var{ih}/@var{in_h} hold the input size.  Unset (the
+default) means the network's native factor times the input.
+
+@item format
+Output pixel format.  Empty (the default) keeps the input format.  Must be one
+of the supported formats below.
+
+@item data
+Directory holding the extracted cubins and the shared @file{weights.bin}.
+@end table
+
+@subsection Quality levels
+
+@option{quality} selects the model:
+
+@table @asis
+@item @code{0} bicubic
+Not a network at all -- a plain bicubic resample, for a like-for-like reference
+to compare the models against.
+
+@item @code{1} low, @code{2} medium
+Fixed 2x super-resolution.
+
+@item @code{3} high, @code{4} ultra
+Scale-adaptive super-resolution: the same model upscales natively by 2x, 3x or
+4x, selected with @option{scale}.
+
+@item @code{5} denoise, @code{6} deblur
+Restoration networks rather than upscalers, forced to the input resolution
+because upscaling with them produces checkerboard and chroma artefacts.
+Restore with one of these first, then upscale in a second @code{vsr_cuda} pass.
+
+@item @code{7} lossless
+A faithful pass-through.
+@end table
+
+Which of these exist depends on where the data came from: the Windows and Linux
+builds of VSR do not ship the same set.  The Windows @code{nvngx_vsr.dll}
+carries @code{0} to @code{4} and 2x only, while the native Linux library adds
+the restoration and lossless models and the 3x/4x heads.  A model or scale the
+installed package has no network for is refused at configuration time with a
+message naming it, rather than silently substituted.
+
+@subsection Supported formats
+
+Packed RGB formats are accepted for both input and output: @code{rgb0},
+@code{rgba}, @code{bgr0}, @code{bgra} (8-bit) and @code{rgba64le} (16-bit).
+Input and output formats are chosen independently (see the @option{format}
+option).  16-bit carries the network's full internal precision and avoids
+banding.
+
+The network's kernels branch on a format selector, exposing an R@math{<->}B
+swap only on the 8-bit path, so the B-first @code{bgr0}/@code{bgra} are handled
+natively.  That swap does not exist on the high-bit-depth path, which packs in
+array-native order, so 16-bit is R-first only (@code{rgba64le}); there is no
+B-first 16-bit variant.
+
+@subsection Colorspace conversion and HDR (libplacebo)
+
+@code{vsr_cuda} deliberately does @strong{not} do YUV@math{<->}RGB conversion or
+tone mapping itself.  Real (YUV) video should be converted with
+@code{libplacebo}, whose colorimetry and tone mapping are far better than a
+hand-rolled kernel.  libplacebo is Vulkan-based, so a Vulkan device is used for
+the conversions and the RGB frames are handed to CUDA.
+
+Both hand-offs are an @code{hwupload} with the other device derived from the
+first (@code{hwupload=derive_device=cuda} for Vulkan@math{->}CUDA,
+@code{hwupload=derive_device=vulkan} for CUDA@math{->}Vulkan).  Each performs a
+direct on-GPU transfer: Vulkan exports the image memory and a semaphore, CUDA
+imports them and copies.  The whole graph therefore stays on the GPU; the only
+host copy is the final @code{hwdownload} for a software encoder (route the output
+to @code{hevc_nvenc} etc. to avoid even that).
+
+Create the Vulkan device with @code{disable_multiplane=1} so semi-planar YUV
+(@code{nv12}, @code{p010}, @dots{}) is backed by one Vulkan image per plane;
+CUDA imports a Vulkan image as a single-plane array, so a multiplanar image
+cannot be crossed to CUDA.  This matters when a hardware decoder/encoder puts
+YUV on the CUDA side of the boundary; RGB (single plane) is unaffected.  CUDA is
+derived from the Vulkan device, keeping both on the same GPU.
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0,disable_multiplane=1 -filter_hw_device vk \
+  -i input.mp4 -vf "
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12,
+  hwdownload,format=nv12
+" -c:v libx264 out.mp4
+@end example
+
+For HDR (e.g. BT.2020 PQ) input, let the first @code{libplacebo} tone-map to
+the working space and the second convert back, keeping high-bit-depth precision
+through @code{vsr_cuda} with @code{rgba64le}:
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0,disable_multiplane=1 -filter_hw_device vk \
+  -i hdr.mp4 -vf "
+  libplacebo=color_trc=smpte2084:format=rgba64le,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3:format=rgba64le,
+  hwupload=derive_device=vulkan,
+  libplacebo=color_trc=bt709:tonemapping=bt.2390:format=p010le,
+  hwdownload,format=p010le
+" -c:v libx265 out.mkv
+@end example
+
+@subsection Hardware decode and encode
+
+The pipeline can be driven entirely by a hardware decoder and encoder, keeping
+the whole chain on the GPU.  There are two hardware paths for each end,
+@code{vulkan} and CUDA (@code{nvdec}/@code{nvenc}), giving four combinations.
+Which work depends on where semi-planar YUV has to cross the CUDA@math{<->}Vulkan
+boundary, because CUDA imports a Vulkan image as a single-plane array
+(see @option{disable_multiplane} above) while @code{hevc_vulkan} requires a
+multiplane YUV image.
+
+@table @asis
+@item Vulkan decode @math{->} Vulkan encode
+Fully zero-copy.  Only packed RGB crosses to CUDA (single plane), so
+@code{disable_multiplane} must be @strong{off} and the encoder gets a normal
+multiplane @code{nv12}:
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0 -filter_hw_device vk \
+  -hwaccel vulkan -hwaccel_output_format vulkan -i input.mp4 -vf "
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12
+" -c:v hevc_vulkan out.mkv
+@end example
+
+@item nvdec @math{->} Vulkan encode
+Works, but the decoded @code{nv12} cannot be crossed to Vulkan zero-copy: that
+would need @option{disable_multiplane}, which then breaks @code{hevc_vulkan}.
+Bounce the decoded frame through host memory with @code{hwdownload} so
+@code{libplacebo} re-uploads it as a multiplane image.  Decode and encode are
+still on hardware; only the decode hand-off copies to the host:
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0 -init_hw_device cuda=cu@@vk \
+  -filter_hw_device vk \
+  -hwaccel cuda -hwaccel_device cu -hwaccel_output_format cuda -i input.mp4 -vf "
+  hwdownload,format=nv12,
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12
+" -c:v hevc_vulkan out.mkv
+@end example
+
+@item Vulkan or nvdec decode @math{->} nvenc
+The @code{nv12} must be crossed from Vulkan to CUDA for @code{nvenc}, so the
+Vulkan device needs @code{disable_multiplane=1} and a trailing
+@code{hwupload=derive_device=cuda}.  With an @code{nvdec} source, prepend
+@code{hwupload=derive_device=vulkan} to move its CUDA frame into
+@code{libplacebo} (which cannot auto-convert a CUDA frame):
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0,disable_multiplane=1 \
+  -init_hw_device cuda=cu@@vk -filter_hw_device vk \
+  -hwaccel vulkan -hwaccel_output_format vulkan -i input.mp4 -vf "
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12,
+  hwupload=derive_device=cuda
+" -c:v hevc_nvenc out.mkv
+@end example
+@end table
+
+The trailing @code{libplacebo=format=nv12} is mandatory: the hardware encoders
+ingest @strong{YCbCr only}.  The Vulkan encoders reject every RGB pixel format
+(@code{Pixel format rgba of input frames not supported}), and @code{nvenc}
+likewise takes @code{nv12}/@code{p010}, so @code{vsr_cuda}'s RGB output cannot be
+fed to an encoder directly.
+
 @section yadif_cuda
 
 Deinterlace the input video using the @ref{yadif} algorithm, but implemented
