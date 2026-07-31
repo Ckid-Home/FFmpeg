@@ -249,6 +249,7 @@ extern const FFFilter ff_vf_deblock;
 extern const FFFilter ff_vf_decimate;
 extern const FFFilter ff_vf_deconvolve;
 extern const FFFilter ff_vf_dedot;
+extern const FFFilter ff_vf_deepdvc_drv_cuda;
 extern const FFFilter ff_vf_deflate;
 extern const FFFilter ff_vf_deflicker;
 extern const FFFilter ff_vf_deinterlace_qsv;

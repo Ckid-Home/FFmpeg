@@ -27483,6 +27483,52 @@ JPEG (full) range
 
 @end table
 
+@section deepdvc_drv_cuda
+
+Enhance colour with NVIDIA RTX Dynamic Vibrance, running the driver's DeepDVC
+network directly on CUDA.
+
+DeepDVC is a learned enhancer rather than a fixed saturation curve: a small
+convolutional network looks at the whole frame and predicts a grid of colour
+transform coefficients, which a second pass then applies at full resolution.
+It works at the input resolution and does not rescale.
+
+It accepts the following options:
+
+@table @option
+@item vibrance
+Strength of the predicted transform, @code{0} to @code{8}.  Default @code{1}.
+@code{0} is an exact pass-through: the strength is applied inside the final
+kernel, so the output is bit-identical to the input rather than merely close to
+it.
+
+@item gain
+Secondary saturation gain, @code{0} to @code{8}.  Default @code{1}.
+
+@item data
+Directory holding the extracted cubins and @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.
+@end table
+
+@subsection Supported formats
+
+8-bit R-first packed RGB CUDA frames: @code{rgb0} or @code{rgba}.  The output
+format is always the input format.
+
+Unlike the super-resolution filters this one does not map the network's format
+selectors -- it drives it as raw 4-channel 8-bit in the frame's own byte order,
+so it cannot be told to swap.  A B-first frame would be enhanced as though blue
+were red, so @code{bgr0} and @code{bgra} are rejected rather than silently
+hue-shifted; convert first.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the DeepDVC data is installed, and
+@option{data} defaults to that package's data directory.
+
 @section dlpp_drv_cuda
 
 Upscale video with the NVIDIA driver's DLPP super-resolution network, running
