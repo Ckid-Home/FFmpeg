@@ -391,6 +391,16 @@ FFRtxImage *ff_rtx_image_linear(AVFilterContext *ctx, FFRtxCuda *r,
                                 size_t size, size_t pitch);
 
 /**
+ * Bind a texture over pitched memory the caller owns -- an input frame's own
+ * plane, say -- rather than over an image this core allocated.  Same descriptor
+ * as ff_rtx_image_pitch() gives, so a filter that binds both ways samples both
+ * the same; the caller owns the handle and destroys it.
+ */
+int ff_rtx_tex_over_pitch(AVFilterContext *ctx, FFRtxCuda *r, CUdeviceptr ptr,
+                          size_t pitch, int W, int H, CUarray_format cufmt,
+                          unsigned flags, CUtexObject *tex);
+
+/**
  * Index of the first launch running kernel @p name, or -1.  For the features
  * whose generated config does not yet carry the launch index of a tunable's
  * kernel the way VSR's sel_launch does.

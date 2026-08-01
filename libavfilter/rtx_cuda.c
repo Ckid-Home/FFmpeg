@@ -539,6 +539,24 @@ FFRtxImage *ff_rtx_image_pitch(AVFilterContext *ctx, FFRtxCuda *r, int W, int H,
     return rtx_bind_handles(ctx, r, img, &rd, flags) < 0 ? NULL : img;
 }
 
+int ff_rtx_tex_over_pitch(AVFilterContext *ctx, FFRtxCuda *r, CUdeviceptr ptr,
+                          size_t pitch, int W, int H, CUarray_format cufmt,
+                          unsigned flags, CUtexObject *tex)
+{
+    CudaFunctions *cu = r->hwctx->internal->cuda_dl;
+    CUDA_TEXTURE_DESC td = rtx_tex_desc(flags);
+    CUDA_RESOURCE_DESC rd = { 0 };
+
+    rd.resType = CU_RESOURCE_TYPE_PITCH2D;
+    rd.res.pitch2D.devPtr       = ptr;
+    rd.res.pitch2D.format       = cufmt;
+    rd.res.pitch2D.numChannels  = 4;
+    rd.res.pitch2D.width        = W;
+    rd.res.pitch2D.height       = H;
+    rd.res.pitch2D.pitchInBytes = pitch;
+    return CHECK_CU(cu->cuTexObjectCreate(tex, &rd, &td, NULL));
+}
+
 FFRtxImage *ff_rtx_image_linear(AVFilterContext *ctx, FFRtxCuda *r,
                                 size_t size, size_t pitch)
 {
