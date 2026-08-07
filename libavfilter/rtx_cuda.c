@@ -36,9 +36,8 @@
 
 #define CHECK_CU(x) FF_CUDA_CHECK_DL(ctx, r->hwctx->internal->cuda_dl, x)
 
-/* Arena sub-buffer alignment (>= cuMemAlloc's own guarantee, which the
- * per-buffer allocations used to rely on) and a trailing guard covering the
- * tile/halo over-read past the final buffer described in the header. */
+/* Arena sub-buffer alignment (>= cuMemAlloc's own guarantee) and a trailing
+ * guard covering the tile/halo over-read past the final buffer. */
 #define RTX_ALLOC_ALIGN 512
 #define RTX_ALLOC_GUARD (1 << 20)
 
@@ -61,11 +60,6 @@ const FFRtxPixFmt *ff_rtx_find_fmt(const FFRtxPixFmt *tbl, int n,
 
 /* ------------------------------------------------------------------------- *
  * cuSurfObjectCreate/Destroy
- *
- * The only pair ffnvcodec's dynlink loader does not export, so it comes
- * straight out of libcuda -- once per process.  libcuda is already loaded (the
- * hwcontext holds it) and lives for the process, so this neither dlcloses nor
- * refcounts.
  * ------------------------------------------------------------------------- */
 typedef CUresult (*tcuSurfObjectCreate)(FFCUsurfObject *, const CUDA_RESOURCE_DESC *);
 typedef CUresult (*tcuSurfObjectDestroy)(FFCUsurfObject);
@@ -128,9 +122,6 @@ int ff_rtx_config_formats(AVFilterContext *ctx, AVFilterLink *inlink,
     if (!outpf)
         return 0;
 
-    /* av_get_pix_fmt() strcmps its argument, so an option cleared to NULL --
-     * av_opt_set(..., "format", NULL, 0) is legal for a string option -- must
-     * not reach it. */
     if (f->out_format && *f->out_format) {
         fmt = av_get_pix_fmt(f->out_format);
         if (fmt == AV_PIX_FMT_NONE) {
@@ -231,8 +222,6 @@ int ff_rtx_arch_gate(AVFilterContext *ctx, FFRtxCuda *r,
         av_log(ctx, AV_LOG_ERROR, gate->hard_msg, cc_major, cc_minor);
         return AVERROR(ENOSYS);
     }
-    /* Blackwell (cc 12.x) and Ada (cc 8.9) are the two the cubins were verified
-     * byte-exact on; everything else needs the opt-in. */
     if (cc_major >= 12 || (cc_major == 8 && cc_minor == 9))
         return 0;
     if (!experimental) {
@@ -274,9 +263,6 @@ int ff_rtx_load_modules(AVFilterContext *ctx, FFRtxCuda *r, const char *dir,
             av_log(ctx, AV_LOG_ERROR, "cannot read cubin %s\n", path);
             return ret;
         }
-        /* Every cubin is a multi-arch fatbin; cuModuleLoadData picks the image
-         * for the running GPU, so a failure here means this data dir carries
-         * none. */
         ret = CHECK_CU(cu->cuModuleLoadData(&r->mod[mods[i].mid], buf));
         av_file_unmap(buf, bsz);
         if (ret < 0) {
@@ -330,8 +316,6 @@ int ff_rtx_alloc_arena(AVFilterContext *ctx, FFRtxCuda *r, int nalloc,
     }
 
     fill_sizes(ctx, sz);
-    /* Lay the arena out in one pass, parking each ordinal's offset in alloc[]
-     * until there is a base address to add it to. */
     for (int a = 0; a < nalloc; a++) {
         r->alloc[a] = total;
         total += FFALIGN(sz[a] > 0 ? (size_t)sz[a] : 1, RTX_ALLOC_ALIGN);
@@ -346,9 +330,6 @@ int ff_rtx_alloc_arena(AVFilterContext *ctx, FFRtxCuda *r, int nalloc,
         r->alloc[a] += r->arena;
 
     if (flags & FF_RTX_ARENA_ZERO) {
-        /* cuMemAlloc does not zero.  Start from a known-zero arena so any
-         * scratch a kernel reads before writing is deterministically 0, as in a
-         * fresh loader process; the weight uploads then fill their buffers. */
         if ((ret = CHECK_CU(cu->cuMemsetD8Async(r->arena, 0, total, r->stream))) < 0)
             return ret;
         if ((ret = CHECK_CU(cu->cuStreamSynchronize(r->stream))) < 0)
@@ -406,22 +387,19 @@ int ff_rtx_upload_weights(AVFilterContext *ctx, FFRtxCuda *r, const char *dir,
             ret = AVERROR_INVALIDDATA;
             break;
         }
-        /* Async: a graph carries hundreds of small uploads (dlpp_drv: 525
-         * averaging 8.8 KiB) and the blocking form pays its round trip on every
-         * one of them.  The source is the mapping below, which has to stay put
-         * until the copies land -- hence the synchronize before it is dropped. */
+        /* Async: a graph carries hundreds of small uploads and the blocking form
+         * pays its round trip on every one.  The source is the mapping below,
+         * which has to stay put until the copies land -- hence the synchronize
+         * before it is dropped. */
         ret = CHECK_CU(cu->cuMemcpyHtoDAsync((CUdeviceptr)up[i].dst,
                                              weights + up[i].file_off, up[i].size,
                                              r->stream));
         if (ret < 0)
             break;
-        /* Track how far into the arena the uploads reach, so a later
-         * ff_rtx_snapshot_arena() only has to preserve that much. */
         end = (size_t)((CUdeviceptr)up[i].dst + up[i].size - r->arena);
         if (end > r->arena_uploaded)
             r->arena_uploaded = end;
     }
-    /* The copies read from the mapping, so they must complete before it goes. */
     if (ret >= 0)
         ret = CHECK_CU(cu->cuStreamSynchronize(r->stream));
     else
@@ -601,16 +579,6 @@ int ff_rtx_find_launch_prefix(const FFRtxCuda *r, const FFRtxFunc *funcs, int nf
 
 /* ------------------------------------------------------------------------- *
  * Per-frame replay
- *
- * None of this synchronizes.  Every op -- the input copy, all the launches, the
- * output copy -- is issued on the shared device stream (hwctx->stream), and
- * every consumer runs on it too: a downstream CUDA filter, or hwcontext_cuda's
- * transfer path, which copies on that same stream and syncs itself.  So stream
- * issue-order already orders our output before any read of it, and orders the
- * next producer's reuse of the freed input buffer after our read.  Blocking per
- * frame would only bound errors to this frame, at the cost of all CPU/GPU
- * overlap.  This relies on the single-shared-stream contract: a consumer on its
- * own context/stream would need an event at that boundary.
  * ------------------------------------------------------------------------- */
 int ff_rtx_filter_frame(AVFilterLink *inlink, AVFrame *in, FFRtxCuda *r,
                         const FFRtxFrameOp *op,
@@ -641,9 +609,6 @@ int ff_rtx_filter_frame(AVFilterLink *inlink, AVFrame *in, FFRtxCuda *r,
     if (ret < 0)
         goto fail;
 
-    /* Restore the arena to its post-upload state for a graph that reads scratch
-     * before writing it: a fresh process gets zeroed pages, a long-running host
-     * recycles dirty memory. */
     if (op->flags & FF_RTX_OP_RESET_ARENA) {
         ret = ff_rtx_reset_arena(ctx, r);
         if (ret < 0)
@@ -682,9 +647,6 @@ int ff_rtx_launch(AVFilterContext *ctx, FFRtxCuda *r, int fnid,
     void *extra[] = { CU_LAUNCH_PARAM_BUFFER_POINTER, params,
                       CU_LAUNCH_PARAM_BUFFER_SIZE, &psize, CU_LAUNCH_PARAM_END };
 
-    /* The tables are the generator's, but the sizes they are indexed against
-     * are the caller's -- ISR has to state them by hand, its header carrying no
-     * MAX_FID -- so an out-of-range id is a bug to report, not to dereference. */
     if (fnid < 0 || fnid > r->max_fid || !r->fn[fnid]) {
         av_log(ctx, AV_LOG_ERROR, "launch of unresolved kernel id %d (max %d)\n",
                fnid, r->max_fid);
@@ -762,11 +724,8 @@ int ff_rtx_fill_opaque_alpha(AVFilterContext *ctx, FFRtxCuda *r, AVFrame *out,
 
     /* Set just the alpha u16 of each pixel, stride = bpp.  A padded row is
      * covered by running over the padding too: it is inside the frame
-     * allocation and nothing reads it (hwframe transfers copy oW*bpp per row),
-     * so one memset does the whole plane instead of one per row -- which at 4K
-     * was over two thousand launches on the critical stream.  The pitch comes
-     * from cuMemAllocPitch and is a multiple of 512, hence of bpp, but fall
-     * back to the row loop rather than assume it. */
+     * allocation and nothing reads it, so one memset does the whole plane
+     * instead of one per row.  Fall back to the row loop if pitch % bpp != 0. */
     if (out->linesize[0] % (int)px == 0) {
         size_t stride_px = (size_t)out->linesize[0] / px;
         return CHECK_CU(cu->cuMemsetD2D16Async(a0, px, 0xFFFF, 1,

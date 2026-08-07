@@ -94,9 +94,6 @@ typedef struct DvcDrvCudaContext {
 #define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
 
 static const AVOption deepdvc_drv_cuda_options[] = {
-    /* Both are a final blend strength in applyLUTToSurface.  1.0 = the driver's
-     * default (byte-exact with the captured graph); 0 = identity/pass-through;
-     * higher = stronger saturation.  vibrance is the primary control. */
     { "vibrance", "vibrance strength (0=off/identity, 1=default, higher=stronger)",
       OFFSET(vibrance), AV_OPT_TYPE_FLOAT, {.dbl=1.0}, 0, 8, FLAGS },
     { "gain", "secondary saturation gain (1=default)",
@@ -136,9 +133,6 @@ static const FFRtxArchGate dvcdrv_gate = {
         "(`rtxv inject`) or module load will fail.\n",
 };
 
-/* ------------------------------------------------------------------------- *
- * One-time graph setup for the selected config + W,H (context current).
- * ------------------------------------------------------------------------- */
 static void fill_sizes(AVFilterContext *ctx, long long *sz)
 {
     DvcDrvCudaContext *s = ctx->priv;
@@ -173,10 +167,8 @@ static int setup_graph(AVFilterContext *ctx)
     if (ret < 0)
         return ret;
 
-    /* Single in-place frame image.  SURFACE_LDST so applyLUTToSurface's SUST
-     * store is valid; the texture (linear/normalized/wrap, matching the loader)
-     * feeds both the sample reads and the surface store via one bindless
-     * handle. */
+    /* In-place: one handle serves as both texture (sample reads) and surface
+     * store (applyLUTToSurface). */
     s->frame = ff_rtx_image_array(ctx, &s->r, s->W, s->H, s->pf->cufmt,
                                   FF_RTX_TEX | FF_RTX_LDST);
     if (!s->frame)
@@ -184,9 +176,7 @@ static int setup_graph(AVFilterContext *ctx)
 
     if ((ret = ff_rtx_alloc_launches(ctx, &s->r, c->nlaunch, sizeof(DvcGenLaunch))) < 0)
         return ret;
-    /* DeepDVC is in-place: both I/O fixups are the one frame texture, so it is
-     * passed as both the tex and the surf handle.  The casts are only
-     * `unsigned long long *` vs `uint64_t *` on LP64. */
+    /* In-place: the frame texture is both tex and surf handle. */
     if (dvcdrv_fill_graph(s->cfg, s->W, s->H, s->W, s->H,
                           (const dvcdrv_devptr *)s->r.alloc,
                           (dvcdrv_devptr)s->frame->tex, (dvcdrv_devptr)s->frame->tex,
@@ -195,9 +185,7 @@ static int setup_graph(AVFilterContext *ctx)
         return AVERROR_BUG;
     }
 
-    /* Tunables: patch the two blend floats on applyLUTToSurface (params 0x10/0x14
-     * -> arg 0x20/0x24).  Default 1.0 == the captured graph (byte-exact); 0 =
-     * identity/pass-through. */
+    /* Patch blend floats on applyLUTToSurface. */
     li = ff_rtx_find_launch(&s->r, (const FFRtxFunc *)c->funcs, c->nfunc,
                             "applyLUTToSurface");
     if (li < 0) {
@@ -219,14 +207,9 @@ static int setup_graph(AVFilterContext *ctx)
     return 0;
 }
 
-/* ------------------------------------------------------------------------- *
- * Per-frame: copy the frame into the in-place image, replay the graph, copy out.
- * ------------------------------------------------------------------------- */
 static int filter_frame(AVFilterLink *inlink, AVFrame *in)
 {
     DvcDrvCudaContext *s = inlink->dst->priv;
-    /* In place: the graph reads and enhances the one frame image.  psize is the
-     * kernel's own cbank size, NOT the captured argsize. */
     const FFRtxFrameOp op = {
         .in_img = s->frame,  .iW = s->W, .iH = s->H, .ibpp = s->pf->bpp,
         .out_img = s->frame, .oW = s->W, .oH = s->H, .obpp = s->pf->bpp,
@@ -254,9 +237,6 @@ static int config_output(AVFilterLink *outlink)
     };
     int ret;
 
-    /* This can run again on a link reconfigure or a graph rebuild; drop the
-     * previous graph first so the rebuild neither leaks nor inherits stale
-     * device pointers. */
     ff_rtx_free_graph(ctx, &s->r);
 
     if ((ret = ff_rtx_config_formats(ctx, inlink, &fmts, &in_frames_ctx,

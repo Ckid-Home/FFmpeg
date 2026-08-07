@@ -72,12 +72,7 @@ FF_RTX_ASSERT_FUNC_LAYOUT(ThdrvFunc);
 FF_RTX_ASSERT_UPLOAD_LAYOUT(ThdrvGenUpload);
 FF_RTX_ASSERT_LAUNCH_LAYOUT(ThdrvGenLaunch);
 
-/* Supported packed frame formats.  Input is read format-agnostically through a
- * texture normalized to [0,1] and there is no B-first path, so it is the shared
- * table's R-first 8-bit rows -- exactly what FF_RTX_N_RGB8_R_FIRST names.
- * Output: scRGB fp16 rgba (linear, drtm arg0x2c=0) or HDR10 x2bgr10le (PQ /
- * SMPTE ST.2084, drtm arg0x2c=1 -> the kernel emits [0,1] PQ values that the
- * SUST.P.2D packs into the 10-bit surface).  See rtx-video-re docs/drtm610/. */
+/* Output: scRGB fp16 rgba or HDR10 x2bgr10le. */
 static const FFRtxPixFmt thdrv_out_fmts[] = {
     { AV_PIX_FMT_RGBAF16LE, CU_AD_FORMAT_HALF,               8, 0 },
     { AV_PIX_FMT_X2BGR10LE, CU_AD_FORMAT_UNORM_INT_101010_2, 4, 0 },
@@ -196,9 +191,6 @@ static const FFRtxArchGate thdrv_gate = {
         "statically matched (sm_75/86/87/89), UNVERIFIED on real hardware.\n",
 };
 
-/* ------------------------------------------------------------------------- *
- * One-time graph setup for W,H.  Must run with the CUDA context current.
- * ------------------------------------------------------------------------- */
 static void fill_sizes(AVFilterContext *ctx, long long *sz)
 {
     TrueHdrDrvCudaContext *s = ctx->priv;
@@ -207,11 +199,7 @@ static void fill_sizes(AVFilterContext *ctx, long long *sz)
     thdrv_fill_allocs(s->W, s->H, NW, NH, sz);
 }
 
-/* One internal graph surface (S1 or S2): a float32 array exposed to its producer
- * kernel as a surface and to its consumer as a texture.  The texture descriptor
- * mirrors the input texture (normalized coords, linear filter) so the producer's
- * pixel-coord SUST and the consumer's normalized TLD line up exactly as they do
- * in loader_ppe. */
+/* Internal surface (S1 or S2): float32 array with both texture and surface. */
 static FFRtxImage *mk_interm(AVFilterContext *ctx, FFRtxCuda *r, int W, int Ha)
 {
     return ff_rtx_image_array(ctx, r, W, Ha, CU_AD_FORMAT_FLOAT,
@@ -238,8 +226,7 @@ static int setup_graph(AVFilterContext *ctx)
                                    (const FFRtxFunc *)thdrv_funcs, THDRV_NFUNC, THDRV_MAX_FID,
                                    NULL)) < 0)
         return ret;
-    /* Zero the arena so any scratch the conv/pov kernels read before writing is
-     * deterministically 0, as in a fresh loader process. */
+    /* Zero the arena: conv/pov kernels read scratch before writing. */
     if ((ret = ff_rtx_alloc_arena(ctx, &s->r, THDRV_NALLOC, fill_sizes,
                                   FF_RTX_ARENA_ZERO)) < 0)
         return ret;
@@ -254,17 +241,12 @@ static int setup_graph(AVFilterContext *ctx)
     if (ret < 0)
         return ret;
 
-    /* Snapshot the pristine arena (weights + zeroed scratch); reset from it each
-     * frame so the graph always reads clean scratch regardless of host memory
-     * reuse. */
+    /* Snapshot pristine arena; reset from it each frame for clean scratch. */
     if ((ret = ff_rtx_snapshot_arena(ctx, &s->r)) < 0)
         return ret;
 
-    /* Input: pitched linear memory, normalized/linear sampling (matches
-     * loader_ppe; the texture unit normalizes the 8-bit UNORM input to [0,1]). */
     s->in_img = ff_rtx_image_pitch(ctx, &s->r, W, H, s->inpf->cufmt, s->inpf->bpp,
                                    FF_RTX_TEX);
-    /* Output array + surface (HDR fp16 rgba = scRGB, or 10-bit PQ). */
     s->out_img = ff_rtx_image_array(ctx, &s->r, W, H, s->outpf->cufmt,
                                     FF_RTX_SURF | FF_RTX_LDST);
     /* Internal surfaces S1 (postprocessing->debanding) and S2 (debanding->drtm). */
@@ -273,11 +255,7 @@ static int setup_graph(AVFilterContext *ctx)
     if (!s->in_img || !s->out_img || !s->s1 || !s->s2)
         return AVERROR_EXTERNAL;
 
-    /* Build the graph.  thdrv_fill_graph() is generated from the same fit as the
-     * tables above and assigns every field through its named thdrv_*_params
-     * struct.  The internal S1/S2 surfaces and textures are passed by fix kind,
-     * which is the index the generated code reads them at.  The casts are only
-     * `unsigned long long *` vs `uint64_t *` on LP64. */
+    /* Build the graph. S1/S2 surfaces and textures are passed by fix kind index. */
     if ((ret = ff_rtx_alloc_launches(ctx, &s->r, THDRV_NLAUNCH, sizeof(ThdrvGenLaunch))) < 0)
         return ret;
     handle[3] = (thdrv_devptr)s->s1->surf;
@@ -297,16 +275,7 @@ static int setup_graph(AVFilterContext *ctx)
     }
     a = ff_rtx_launch_at(&s->r, THDRV_DRTM_LAUNCH)->params;
 
-    /* Resolve the tunables the preset names, before marshalling them below.  The
-     * SDK preset selects the adaptive path and the exposure/middlegray that
-     * emulate the SDK truehdr_cuda curve (middlegray one step lower for PQ
-     * output).  Only tunables left at auto (-1) take a preset value, so an
-     * explicit one passed alongside the preset still wins -- including one that
-     * happens to equal the neutral default, which a compare-against-the-default
-     * test could not tell apart.  The resolved values live in locals: the
-     * AVOption fields stay as the user set them, so a re-run of config_output
-     * resolves from the same starting point and av_opt_get still reports what
-     * was asked for. */
+    /* Resolve preset tunables (auto=-1 takes preset value, explicit wins). */
     sdk        = s->preset == THDRV_PRESET_SDK;
     tonemap    = s->tonemap >= 0 ? s->tonemap : 1;
     exposure   = s->exposure   >= 0 ? s->exposure   : (sdk ? 800.0 : 200.0);
@@ -317,34 +286,20 @@ static int setup_graph(AVFilterContext *ctx)
                "preset=sdk: tonemap=%d exposure=%.0f middlegray=%.0f\n",
                tonemap, exposure, middlegray);
 
-    /* drtm override: peak luminance (float32, computed in double then cast to
-     * bit-match the reference). */
+    /* drtm override: peak luminance. */
     {
         float maxlum = (float)av_clipd(s->maxluminance, 400, 2000);
         memcpy(a + THDRV_OFF_MAXLUMINANCE, &maxlum, 4);
     }
 
-    /* Output format flags (drtm final SUST).  arg0x2c = TRANSFER: 0 = scRGB linear
-     * (rgb*MaxLuminance/80, fp16); 1 = PQ / SMPTE ST.2084 -> normalized [0,1] the
-     * 10-bit x2bgr10le surface packs.  arg0x2b = GAMUT: 1 = Rec.709->Rec.2020 primary
-     * matrix.  x2bgr10le output enables PQ, and (by default) the gamut too == HDR10 /
-     * BT.2100.  arg0x2b is byte 3 of a packed dword, so write a single byte. */
+    /* Output format flags: PQ transfer and Rec.709->Rec.2020 gamut for x2bgr10le. */
     if (s->outpf->f == AV_PIX_FMT_X2BGR10LE) {
         int32_t pq = 1;
         memcpy(a + THDRV_OFF_TRANSFER, &pq, 4);
         a[THDRV_OFF_GAMUT] = s->gamut ? 1 : 0;
     }
 
-    /* Adaptive inverse-tone-map (tonemap>=1, the default).  The captured drtm template
-     * runs ToneMapMode 0 -- a near-linear bypass that reads only MaxLuminance, so
-     * tonemap=0 is byte-exact vs the loader but blows out midtones.  Mode 1 enables the
-     * driver's adaptive curve, which additionally consumes the live calculate_pov
-     * scene stat (drtm arg0x48 = the per-frame bright-pixel fraction; the graph
-     * already produces it and the arena reset zero-inits its atomic accumulator each
-     * frame -- see filter_frame / loader_ppe) and is gated by the tone floats.  Those
-     * MUST be non-zero or the curve divides by zero (NaN), so write the tunable set
-     * with neutral shadow-lift.  Offsets are the drtm610-named arg offsets.  Mode 0
-     * is left entirely untouched. */
+    /* Adaptive inverse-tone-map (mode 1). Shadow lift must be non-zero to avoid NaN. */
     if (tonemap >= 1) {
         float f_contrast   = (float)av_clipd(s->contrast,   0.1, 4.0);
         float f_shadowlift = 1.0f;               /* neutral; curve needs it non-zero */
@@ -358,10 +313,7 @@ static int setup_graph(AVFilterContext *ctx)
         memcpy(a + THDRV_OFF_MIDDLEGRAY,  &f_middlegray, 4);
         memcpy(a + THDRV_OFF_EXPOSURE,    &f_exposure,   4);
         memcpy(a + THDRV_OFF_TONEMAPMODE, &mode,         4);
-        /* Per-channel gamma is a separate opt-in: it needs its enable byte
-         * (arg0x40) set as well as the exponent (arg0x10).  Only touch them when
-         * the user asked for a non-identity gamma, so gamma=1.0 leaves the
-         * (byte-exact) mode-1 arg buffer untouched. */
+        /* Per-channel gamma is opt-in: only enable when non-identity. */
         if (s->gamma != 1.0) {
             float g = (float)av_clipd(s->gamma, 0.25, 4.0);
             memcpy(a + THDRV_OFF_GAMMA, &g, 4);
@@ -380,13 +332,7 @@ static int setup_graph(AVFilterContext *ctx)
     return 0;
 }
 
-/* ------------------------------------------------------------------------- *
- * Per-frame: bind the input frame as a texture, replay the graph, copy out.
- * ------------------------------------------------------------------------- */
-/* The output is HDR, not the SDR the input props describe -- retag so a
- * colour-managed consumer interprets it.  rgbaf16le = scRGB (linear light,
- * Rec.709, full range); x2bgr10le = HDR10 (PQ / SMPTE ST.2084, Rec.2020 primaries
- * when the gamut matrix is on -- the standard -- else Rec.709). */
+/* Retag output as HDR (scRGB or HDR10 PQ/Rec.2020). */
 static void retag_hdr(AVFilterContext *ctx, AVFrame *out)
 {
     TrueHdrDrvCudaContext *s = ctx->priv;

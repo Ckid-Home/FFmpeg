@@ -70,7 +70,6 @@
 #ifndef CU_AD_FORMAT_UNORM_INT_101010_2
 #define CU_AD_FORMAT_UNORM_INT_101010_2 ((CUarray_format)0x50)
 #endif
-/* cuLaunchKernel packed-argument sentinels. */
 #ifndef CU_LAUNCH_PARAM_END
 #define CU_LAUNCH_PARAM_END            ((void*)0x00)
 #define CU_LAUNCH_PARAM_BUFFER_POINTER ((void*)0x01)
@@ -138,8 +137,7 @@ typedef struct FFRtxLaunch {
  * A frame format the graph can be bound to.  @p sel is the kernel's own format
  * selector where the network has one (VSR/DLPP: 0 = raw 8-bit RGB order,
  * 1 = raw 8-bit with an R<->B swap, 2 = the format-agnostic tex.f32 read /
- * sust.p store that packs any UNORM array in its native order); features
- * without a selector leave it 0, or reuse the field for their own flag.
+ * sust.p store that packs any UNORM array in its native order).
  */
 typedef struct FFRtxPixFmt {
     enum AVPixelFormat f;
@@ -150,10 +148,7 @@ typedef struct FFRtxPixFmt {
 
 /* The packed-RGB formats the VSR-family networks accept.  The R<->B swap only
  * exists on the raw 8-bit path, so B-first formats are 8-bit only; higher bit
- * depths go through the native-order sel-2 path.  A feature whose selector is
- * not mapped cannot honour sel at all, so it takes only the R-first 8-bit rows
- * (FF_RTX_N_RGB8_R_FIRST): feeding it a B-first frame would drive the network
- * with red and blue transposed. */
+ * depths go through the native-order sel-2 path. */
 extern const FFRtxPixFmt ff_rtx_packed_rgb_fmts[5];
 #define FF_RTX_N_RGB8_R_FIRST 2
 
@@ -165,8 +160,7 @@ const FFRtxPixFmt *ff_rtx_find_fmt(const FFRtxPixFmt *tbl, int n,
  * ------------------------------------------------------------------------- */
 /**
  * One image the graph binds: a CUDA array or a linear/pitched allocation, with
- * the bindless texture and/or surface handle over it.  Only the members the
- * requested binding needs are set; the rest stay zero.
+ * the bindless texture and/or surface handle over it.
  */
 typedef struct FFRtxImage {
     CUarray        arr;    ///< set for array-backed images
@@ -210,7 +204,6 @@ typedef struct FFRtxCuda {
     int                  ready;          ///< the graph is built and replayable
 } FFRtxCuda;
 
-/** The launch at index @p i of a graph built by ff_rtx_alloc_launches(). */
 static inline FFRtxLaunch *ff_rtx_launch_at(const FFRtxCuda *r, int i)
 {
     return (FFRtxLaunch *)((uint8_t *)r->launches + (size_t)i * r->launch_size);
@@ -236,9 +229,6 @@ void ff_rtx_uninit(AVFilterContext *ctx);
 /* ------------------------------------------------------------------------- *
  * Device binding and output plumbing
  * ------------------------------------------------------------------------- */
-/**
- * The formats a filter accepts, for ff_rtx_config_formats().
- */
 typedef struct FFRtxFormats {
     const FFRtxPixFmt *in_tbl;
     int                n_in;
@@ -252,24 +242,15 @@ typedef struct FFRtxFormats {
  * The config_output prologue every filter shares: require a CUDA hwframe input,
  * look its sw_format up in the input table, and resolve the output format --
  * the `format` option when set, else the input format -- in the output table.
- * @p outpf may be NULL for a filter whose output format is its input format.
  */
 int ff_rtx_config_formats(AVFilterContext *ctx, AVFilterLink *inlink,
                           const FFRtxFormats *f,
                           AVHWFramesContext **in_frames_ctx,
                           const FFRtxPixFmt **inpf, const FFRtxPixFmt **outpf);
 
-/**
- * Take a reference on the input frames context's device and cache the CUDA
- * context and stream.  Must be called before anything else touches @p r.
- */
 int ff_rtx_bind_device(AVFilterContext *ctx, FFRtxCuda *r,
                        AVHWFramesContext *in_frames_ctx);
 
-/**
- * Set the output link's size and build its CUDA frames context.  Call after
- * ff_rtx_bind_device() and before ff_rtx_setup().
- */
 int ff_rtx_config_hwframes(AVFilterContext *ctx, AVFilterLink *outlink,
                            FFRtxCuda *r, int oW, int oH,
                            enum AVPixelFormat sw_format);
@@ -305,8 +286,6 @@ int ff_rtx_arch_gate(AVFilterContext *ctx, FFRtxCuda *r,
 /**
  * Load every cubin named by @p mods out of @p dir and resolve every kernel in
  * @p funcs, into r->mod[]/r->fn[] sized for @p max_mid / @p max_fid.
- * @p load_hint, if set, is appended to a module-load failure (which is nearly
- * always "this data dir has no image for the running GPU").
  */
 int ff_rtx_load_modules(AVFilterContext *ctx, FFRtxCuda *r, const char *dir,
                         const FFRtxModule *mods, int nmod, int max_mid,
@@ -337,15 +316,8 @@ int ff_rtx_alloc_arena(AVFilterContext *ctx, FFRtxCuda *r, int nalloc,
 
 /**
  * Arrange for ff_rtx_reset_arena() to restore the arena to its post-upload
- * state.  For graphs that read scratch before writing it: a fresh process gets
- * zeroed pages from cuMemAlloc and is byte-exact, but a long-running host
- * recycles dirty memory, so the arena has to be put back between frames.
- *
- * Only the uploaded prefix is snapshotted.  ff_rtx_alloc_arena() zeroed the
- * whole arena and the uploads then wrote a prefix of it, so everything past the
- * last uploaded byte is known to be zero -- the reset can memset it instead of
- * copying it back, which is bit-identical and much cheaper (a device-to-device
- * copy reads and writes, a memset only writes).  Call after the uploads.
+ * state.  Only the uploaded prefix is snapshotted; everything past it is known
+ * to be zero so reset uses memset instead of copy.  Call after the uploads.
  */
 int ff_rtx_snapshot_arena(AVFilterContext *ctx, FFRtxCuda *r);
 int ff_rtx_reset_arena(AVFilterContext *ctx, FFRtxCuda *r);
@@ -370,19 +342,6 @@ int ff_rtx_alloc_launches(AVFilterContext *ctx, FFRtxCuda *r,
 #define FF_RTX_CLAMP (1 << 3)  ///< texture address mode CLAMP (else the default WRAP)
 #define FF_RTX_ZERO  (1 << 4)  ///< zero the backing store (pitched images only)
 
-/**
- * Bind a W x H image the graph can read and/or write.  Textures are always
- * created linear-filtered with normalized coordinates, which is what the
- * captured graphs sample with.
- *
- * ff_rtx_image_array()  -- a CUDA array, the usual input texture / output surface
- * ff_rtx_image_pitch()  -- pitched linear memory bound as a PITCH2D texture
- * ff_rtx_image_linear() -- a plain packed buffer, no texture or surface
- *
- * The returned pointer is owned by @p r and stays valid until
- * ff_rtx_free_graph(); NULL means the image could not be created (the reason is
- * already logged).
- */
 FFRtxImage *ff_rtx_image_array(AVFilterContext *ctx, FFRtxCuda *r, int W, int H,
                                CUarray_format cufmt, unsigned flags);
 FFRtxImage *ff_rtx_image_pitch(AVFilterContext *ctx, FFRtxCuda *r, int W, int H,
@@ -392,19 +351,13 @@ FFRtxImage *ff_rtx_image_linear(AVFilterContext *ctx, FFRtxCuda *r,
 
 /**
  * Bind a texture over pitched memory the caller owns -- an input frame's own
- * plane, say -- rather than over an image this core allocated.  Same descriptor
- * as ff_rtx_image_pitch() gives, so a filter that binds both ways samples both
- * the same; the caller owns the handle and destroys it.
+ * plane, say -- rather than over an image this core allocated.
  */
 int ff_rtx_tex_over_pitch(AVFilterContext *ctx, FFRtxCuda *r, CUdeviceptr ptr,
                           size_t pitch, int W, int H, CUarray_format cufmt,
                           unsigned flags, CUtexObject *tex);
 
-/**
- * Index of the first launch running kernel @p name, or -1.  For the features
- * whose generated config does not yet carry the launch index of a tunable's
- * kernel the way VSR's sel_launch does.
- */
+/** Index of the first launch running kernel @p name, or -1. */
 int ff_rtx_find_launch(const FFRtxCuda *r, const FFRtxFunc *funcs, int nfunc,
                        const char *name);
 /** As ff_rtx_find_launch(), matching a kernel-name prefix. */
@@ -419,10 +372,6 @@ int ff_rtx_find_launch_prefix(const FFRtxCuda *r, const FFRtxFunc *funcs, int nf
 #define FF_RTX_OP_RESET_ARENA  (1 << 1)  ///< restore the pristine arena before each frame
 #define FF_RTX_OP_OPAQUE_ALPHA (1 << 2)  ///< force opaque alpha over the output
 
-/**
- * What one frame through a configured graph consists of.  in_img and out_img
- * are the same image for a filter that works in place.
- */
 typedef struct FFRtxFrameOp {
     const FFRtxImage *in_img, *out_img;
     int iW, iH, ibpp;
@@ -436,8 +385,8 @@ typedef struct FFRtxFrameOp {
 /**
  * One whole frame: take the output buffer, copy the input frame's properties,
  * push the CUDA context, replay the graph over the frame, pop, and forward the
- * result.  @p retag, if set, adjusts the output frame's properties (the TrueHDR
- * filters retag SDR input as HDR) before the graph runs.  Consumes @p in.
+ * result.  @p retag, if set, adjusts the output frame's properties before the
+ * graph runs.  Consumes @p in.
  */
 int ff_rtx_filter_frame(AVFilterLink *inlink, AVFrame *in, FFRtxCuda *r,
                         const FFRtxFrameOp *op,
@@ -450,9 +399,8 @@ int ff_rtx_launch(AVFilterContext *ctx, FFRtxCuda *r, int fnid,
 
 /**
  * Issue the whole launch list in order.  @p use_psize selects the kernel's own
- * EIATTR_CBANK_PARAM_SIZE rather than the captured driver argsize -- the driver
- * over-reports for some DLPP tex/surf kernels, which makes cuLaunchKernel fail
- * with CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES.
+ * EIATTR_CBANK_PARAM_SIZE rather than the captured driver argsize -- needed for
+ * some DLPP tex/surf kernels that over-report and would otherwise fail.
  */
 int ff_rtx_launch_all(AVFilterContext *ctx, FFRtxCuda *r, int use_psize);
 
@@ -465,13 +413,8 @@ int ff_rtx_image_to_frame(AVFilterContext *ctx, FFRtxCuda *r,
                           int W, int H, int bpp);
 
 /**
- * Force opaque alpha over @p out.  The resample store kernel
- * (dlpp_ResampleAndComposeFP16) omits the alpha write in its formatted path --
- * unlike postProcess, which stores 1.0 -- so >= 10-bit output on the resample
- * path would come out fully transparent (RGB is correct; verified in SASS, and
- * the SDK DLL has the same omission).  These networks always produce opaque
- * output, so this runs for any sel-2 output: it fixes the resample case and is
- * a harmless no-op on the fast path.
+ * Force opaque alpha over @p out.  The resample store kernel omits the alpha
+ * write in its formatted path so >= 10-bit output would come fully transparent.
  */
 int ff_rtx_fill_opaque_alpha(AVFilterContext *ctx, FFRtxCuda *r, AVFrame *out,
                              int oW, int oH, int bpp);
@@ -479,30 +422,15 @@ int ff_rtx_fill_opaque_alpha(AVFilterContext *ctx, FFRtxCuda *r, AVFrame *out,
 /* ------------------------------------------------------------------------- *
  * Teardown and helpers
  * ------------------------------------------------------------------------- */
-/**
- * Release everything ff_rtx_* built, against the CUDA context it was built on,
- * and reset @p r so a graph can be built again.  Safe when nothing is
- * configured.  config_output() may run more than once -- a mid-stream
- * reconfigure, or a media player rebuilding its filter graph on seek -- so this
- * must leave no leaked allocation and no stale device pointer baked into a
- * launch argument block.
- */
+/** Release everything ff_rtx_* built and reset @p r so a graph can be rebuilt. Safe when nothing is configured. */
 void ff_rtx_free_graph(AVFilterContext *ctx, FFRtxCuda *r);
 
-/**
- * Evaluate the `w`/`h` output-size expressions over in_w/iw/in_h/ih.  An unset
- * or empty expression means @p defscale x the input.
- */
+/** Evaluate the `w`/`h` output-size expressions over in_w/iw/in_h/ih. An unset or empty expression means @p defscale x the input. */
 int ff_rtx_eval_dims(AVFilterContext *ctx, AVFilterLink *inlink,
                      const char *w_expr, const char *h_expr, int defscale,
                      int *oW, int *oH);
 
-/**
- * TrueHDR's internal network resolution: shorter side -> 544, longer side
- * aspect-scaled and quantized to a multiple of 32.  Must bit-match the float32
- * arithmetic of rtxv.fit.truehdr.nn_dims (verified byte-exact across 28
- * resolutions).
- */
+/** TrueHDR's internal network resolution: shorter side -> 544, longer side aspect-scaled and quantized to a multiple of 32. */
 void ff_rtx_nn_dims(int W, int H, int *NW, int *NH);
 
 #endif /* AVFILTER_RTX_CUDA_H */

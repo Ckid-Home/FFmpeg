@@ -110,15 +110,8 @@ typedef struct DlppDrvCudaContext {
 #define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
 
 static const AVOption dlpp_drv_cuda_options[] = {
-    /* DLPP quality selects the internal SR network (model index via params +0xc).
-     * q1 -> base model 1; q2 -> deeper model 2 (both do a fixed internal 2x +
-     * resample for other ratios). q3/q4 -> the high-quality models 5/6, which do
-     * NATIVE integer upscaling at the `scale` factor (2/3/4) and require output =
-     * scale x input. Default 1.
-     *
-     * The driver's own index 0 selects the same model 1 as index 1, and produces a
-     * byte-identical graph.  It is not exposed: one model under two numbers only
-     * invites someone to A/B them and find no difference. */
+    /* Driver index 0 selects the same model as index 1 -- not exposed to avoid
+     * confusion. */
     { "quality", "DLPP quality (1=base, 2=deeper; 3/4=native-scale high quality)", OFFSET(quality), AV_OPT_TYPE_INT, {.i64=1}, 1, 4, FLAGS },
     /* Native SR scale for quality 3/4 only (ignored for 1/2): 2/3/4 -> the driver's
      * pixel_shuffle2/3/4 head (params[0x38]). Exact scale x input output uses the
@@ -180,9 +173,6 @@ static const FFRtxArchGate dlppdrv_gate = {
         "sm_80 image, unverified on real hardware.\n",
 };
 
-/* ------------------------------------------------------------------------- *
- * One-time graph setup for the selected config + W,H,oW,oH (context current).
- * ------------------------------------------------------------------------- */
 static void fill_sizes(AVFilterContext *ctx, long long *sz)
 {
     DlppDrvCudaContext *s = ctx->priv;
@@ -217,8 +207,6 @@ static int setup_graph(AVFilterContext *ctx)
     if (ret < 0)
         return ret;
 
-    /* input array + texture (linear/normalized/clamp; the frame is copied in
-     * each frame), and the output array + surface (the SUST.P target). */
     s->in_img = ff_rtx_image_array(ctx, &s->r, s->W, s->H, s->inpf->cufmt,
                                    FF_RTX_TEX | FF_RTX_CLAMP);
     s->out_img = ff_rtx_image_array(ctx, &s->r, s->oW, s->oH, s->outpf->cufmt,
@@ -226,11 +214,7 @@ static int setup_graph(AVFilterContext *ctx)
     if (!s->in_img || !s->out_img)
         return AVERROR_EXTERNAL;
 
-    /* Build the graph.  dlppdrv_fill_graph() is generated from the same fit as
-     * the tables above and assigns every field through its named
-     * dlppdrv_*_params struct, so the argument blocks are constructed rather
-     * than patched.  The casts are only `unsigned long long *` vs `uint64_t *`
-     * on LP64. */
+    /* Build the graph. */
     if ((ret = ff_rtx_alloc_launches(ctx, &s->r, c->nlaunch, sizeof(DlppGenLaunch))) < 0)
         return ret;
     if (dlppdrv_fill_graph(s->cfg, s->W, s->H, s->oW, s->oH,
@@ -241,15 +225,12 @@ static int setup_graph(AVFilterContext *ctx)
         return AVERROR_BUG;
     }
 
-    /* Format selectors, on the shared DLPP glue kernels. */
     if ((ret = ff_dlpp_patch_selectors(ctx, &s->r, funcs, c->nfunc,
                                        s->inpf, s->outpf, c->tag, &pre)) < 0)
         return ret;
     srchead = ff_rtx_find_launch_prefix(&s->r, funcs, c->nfunc, DLPPDRV_SRC_HEAD_KERNEL);
 
-    /* Split-screen comparison wipe (params +0x10 -> SR-head kernel arg @0x498 =
-     * round(oW*wipe)).  0 (default) leaves the byte-exact-with-the-DLL full-SR
-     * output; >0 shows the left oW*wipe columns as the bicubic reference. */
+    /* Split-screen comparison wipe. */
     if (s->wipe > 0) {
         uint32_t col = (uint32_t)(s->wipe * (float)s->oW + 0.5f);
         if (srchead < 0) {
@@ -281,13 +262,9 @@ static int setup_graph(AVFilterContext *ctx)
     return 0;
 }
 
-/* ------------------------------------------------------------------------- *
- * Per-frame: bind the input frame as a texture, replay the graph, copy out.
- * ------------------------------------------------------------------------- */
 static int filter_frame(AVFilterLink *inlink, AVFrame *in)
 {
     DlppDrvCudaContext *s = inlink->dst->priv;
-    /* psize is the kernel's own cbank size, NOT the captured argsize */
     const FFRtxFrameOp op = {
         .in_img = s->in_img,  .iW = s->W,  .iH = s->H,  .ibpp = s->inpf->bpp,
         .out_img = s->out_img, .oW = s->oW, .oH = s->oH, .obpp = s->outpf->bpp,

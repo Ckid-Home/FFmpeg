@@ -83,11 +83,7 @@ FF_RTX_ASSERT_FUNC_LAYOUT(ThdrFunc);
 FF_RTX_ASSERT_UPLOAD_LAYOUT(ThdrGenUpload);
 FF_RTX_ASSERT_LAUNCH_LAYOUT(ThdrGenLaunch);
 
-/* Supported packed frame formats.  The input is read format-agnostically through
- * a texture (normalized to [0,1]); R-first 8-bit (rgb0/rgba) is the standard SDR
- * input (there is no B-first path).  The output is HDR: fp16 rgba (default) or
- * 10-bit x2bgr10le, selected by two flag words in the drtm arg buffer -- carried
- * here in FFRtxPixFmt::sel. */
+/* Input: R-first 8-bit or 10-bit x2bgr10le (no B-first path). Output: HDR fp16 or 10-bit. */
 static const FFRtxPixFmt thdr_in_fmts[] = {
     { AV_PIX_FMT_RGB0,      CU_AD_FORMAT_UNSIGNED_INT8,       4, 0 },
     { AV_PIX_FMT_RGBA,      CU_AD_FORMAT_UNSIGNED_INT8,       4, 0 },
@@ -127,9 +123,7 @@ static const AVOption truehdr_cuda_options[] = {
     { "maxluminance", "peak luminance in nits (400..2000)", OFFSET(maxluminance), AV_OPT_TYPE_DOUBLE, {.dbl=1000}, 400, 2000, FLAGS },
     { "data", "directory with extracted TrueHDR cubins + weights.bin",
       OFFSET(data_dir), AV_OPT_TYPE_STRING, {.str=TRUEHDR_DEFAULT_DATA_DIR}, 0, 0, FLAGS },
-    /* Named rather than left NULL-for-the-default, so `format` reports what it
-     * does: unlike the super-resolution filters there is no same-as-input
-     * output here -- the whole point is the SDR->HDR change. */
+    /* Named default so `format` reports what it does (no same-as-input output here). */
     { "format", "output: rgbaf16le=scRGB linear Rec.709 80nit (default), x2bgr10le=HDR10 PQ Rec.2020",
       OFFSET(out_format), AV_OPT_TYPE_STRING, {.str="rgbaf16le"}, 0, 0, FLAGS },
     { NULL }
@@ -139,20 +133,11 @@ AVFILTER_DEFINE_CLASS(truehdr_cuda);
 
 FF_RTX_ASSERT_PRIV_LAYOUT(TrueHdrCudaContext);
 
-/* As for vsr_cuda: a capture only yields the capturing GPU's images, so
- * `rtxv extract truehdr` replaces each one with the snippet's own fatbin --
- * every architecture the DLL ships, plus the PTX -- and fills the conv backbone
- * in from the sibling ELFs.  A data dir built with --no-fatbins still holds
- * bare single-arch cubins, which is what a module-load failure here usually
- * means.  No arch gate: nothing in an SDK snippet's cubins is a
- * statically-matched guess needing an opt-in. */
+/* Capture yields only one GPU's images; `rtxv extract` repacks as multi-arch fatbins. */
 #define THDR_LOAD_HINT \
     "Re-run `rtxv extract truehdr <nvngx_truehdr.dll>` and `rtxv install`: the " \
     "generator repacks each kernel as the snippet's own multi-arch fatbin."
 
-/* ------------------------------------------------------------------------- *
- * One-time graph setup for W,H.  Must run with the CUDA context current.
- * ------------------------------------------------------------------------- */
 static void fill_sizes(AVFilterContext *ctx, long long *sz)
 {
     TrueHdrCudaContext *s = ctx->priv;
@@ -175,9 +160,7 @@ static int setup_graph(AVFilterContext *ctx)
                                    (const FFRtxFunc *)thdr_funcs, THDR_NFUNC, THDR_MAX_FID,
                                    THDR_LOAD_HINT)) < 0)
         return ret;
-    /* Zero the arena: calculate_pov and k_conv_fp16_nhwc read uninitialised
-     * scratch (compute-sanitizer initcheck), which in a fresh CLI process is
-     * zeroed pages and therefore byte-exact. */
+    /* Zero the arena: conv/pov kernels read scratch before writing. */
     if ((ret = ff_rtx_alloc_arena(ctx, &s->r, THDR_NALLOC, fill_sizes,
                                   FF_RTX_ARENA_ZERO)) < 0)
         return ret;
@@ -192,48 +175,24 @@ static int setup_graph(AVFilterContext *ctx)
     if (ret < 0)
         return ret;
 
-    /* Snapshot the pristine arena (weights + zeroed scratch); every frame resets
-     * it, so the graph always reads the same clean scratch instead of whatever
-     * the previous frame or another host (mpv) left behind. */
+    /* Snapshot pristine arena; reset from it each frame for clean scratch. */
     if ((ret = ff_rtx_snapshot_arena(ctx, &s->r)) < 0)
         return ret;
 
-    /* Input: pitched linear memory read with linear/normalized/clamp sampling
-     * (the texture unit normalizes any 8/10-bit UNORM format to [0,1]). */
     s->in_img = ff_rtx_image_pitch(ctx, &s->r, W, H, s->inpf->cufmt, s->inpf->bpp,
                                    FF_RTX_TEX | FF_RTX_CLAMP);
-    /* Zero texture bound to the graph's stale intermediate-texture handles (the
-     * generator's kind-4 fixups).  A small zeroed buffer read with clamp -> every
-     * sample is 0, exactly reproducing the read from an unbound handle that the
-     * CLI relied on (byte-exact), but as a real, safe object that can never alias
-     * a live texture. */
+    /* Zero texture for stale intermediate handles (kind-4 fixups): clamped read -> always 0. */
     s->zero = ff_rtx_image_pitch(ctx, &s->r, 64, 64, s->inpf->cufmt, s->inpf->bpp,
                                  FF_RTX_TEX | FF_RTX_CLAMP | FF_RTX_ZERO);
-    /* HDR output array + surface: fp16 rgba or 10-bit x2bgr10le. */
     s->out_img = ff_rtx_image_array(ctx, &s->r, W, H, s->outpf->cufmt,
                                     FF_RTX_SURF | FF_RTX_LDST);
-    /* Private scratch surface bound to the graph's stale scratch/clear surface
-     * handles (the generator's kind-3 fixups).  Several kernels write surfaces the
-     * DLL created as extra bindless objects (e.g. truehdr_postprocessing is a pure
-     * clear -- sust {0,0,0,0} over WxH -- and truehdr_debanding writes a scratch
-     * surface); their handles were baked as invariant literals with no fixup because
-     * the capture's PTX analysis only tagged the primary output surface.  In a fresh
-     * process the literals alias nothing (writes dropped, byte-exact), but in a busy
-     * CUDA context (mpv/nvdec, gpu-next's Vulkan interop) they alias LIVE objects --
-     * e.g. our own input texture gets postprocessing's handle -> the clear zeros the
-     * input -> black output.  Route all such writes here; nothing reads them back
-     * (no suld anywhere in the graph), so it is output-irrelevant and matches the
-     * byte-exact reference.  sust.p.v4.b32 -> 4x32-bit. */
+    /* Scratch surface for stale handle writes (kind-3 fixups): nothing reads them back. */
     s->scratch = ff_rtx_image_array(ctx, &s->r, W, H, CU_AD_FORMAT_UNSIGNED_INT32,
                                     FF_RTX_SURF | FF_RTX_LDST);
     if (!s->in_img || !s->zero || !s->out_img || !s->scratch)
         return AVERROR_EXTERNAL;
 
-    /* Build the graph.  thdr_fill_graph() is generated from the same fit as the
-     * tables above and assigns every field through its named thdr_*_params
-     * struct.  Kinds 3 and 4 are the two stale slots the SDK snippet leaves
-     * bound; they are given the private objects above rather than left dangling.
-     * The casts are only `unsigned long long *` vs `uint64_t *` on LP64. */
+    /* Build the graph: kinds 3/4 route stale handles to private objects. */
     if ((ret = ff_rtx_alloc_launches(ctx, &s->r, THDR_NLAUNCH, sizeof(ThdrGenLaunch))) < 0)
         return ret;
     handle[3] = (thdr_devptr)s->scratch->surf;
@@ -245,9 +204,7 @@ static int setup_graph(AVFilterContext *ctx)
         return AVERROR_BUG;
     }
 
-    /* drtm overrides: the 4 tunables (float32, computed in double then cast to
-     * bit-match the DLL) and the output-format flag words.  These sit at fixed
-     * offsets in the truehdr_drtm launch's arg buffer (see rtx-video-re). */
+    /* drtm overrides: tunables and output-format flags at fixed arg offsets. */
     if (THDR_DRTM_LAUNCH < 0 || THDR_DRTM_LAUNCH >= s->r.nlaunch) {
         av_log(ctx, AV_LOG_ERROR, "no drtm launch in graph\n");
         return AVERROR_BUG;
@@ -274,13 +231,7 @@ static int setup_graph(AVFilterContext *ctx)
     return 0;
 }
 
-/* ------------------------------------------------------------------------- *
- * Per-frame: bind the input frame as a texture, replay the graph, copy out.
- * ------------------------------------------------------------------------- */
-/* The output is HDR, not the SDR the input props describe -- retag it so a
- * colour-managed consumer (mpv gpu-next) interprets it correctly and does not
- * see the frame properties "change on the fly".  fp16 = scRGB (linear, Rec.709,
- * full range); x2bgr10le = HDR10 (PQ, Rec.2020).  Both are RGB. */
+/* Retag output as HDR (scRGB or HDR10 PQ/Rec.2020). */
 static void retag_hdr(AVFilterContext *ctx, AVFrame *out)
 {
     TrueHdrCudaContext *s = ctx->priv;

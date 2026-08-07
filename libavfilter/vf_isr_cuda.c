@@ -80,16 +80,12 @@
 FF_RTX_ASSERT_MODULE_LAYOUT(IsrModule);
 FF_RTX_ASSERT_FUNC_LAYOUT(IsrFunc);
 
-/* ISR's module tables index modules and kernels densely from 0, and its graph is
- * captured rather than fitted, so the generated header carries no MAX_MID/FID. */
+/* Captured graph has no MAX_MID/FID in the generated header; we define them here. */
 #define ISR_MAX_MID 64
 #define ISR_MAX_FID 128
 
-/* IsrGenLaunch is the odd one out: no psize (every launch uses the captured
- * argsize), and three extra fields carrying the per-tile pointer cursor, which
- * is the one thing that still advances per tile at frame time rather than once
- * at config time.  So this filter drives ff_rtx_launch() itself instead of
- * handing the whole list to ff_rtx_launch_all(). */
+/* IsrGenLaunch: no psize (uses captured argsize), plus per-tile pointer cursor
+ * that advances at frame time, so this filter drives ff_rtx_launch() itself. */
 
 typedef struct IsrCudaContext {
     const AVClass *class;
@@ -110,9 +106,7 @@ typedef struct IsrCudaContext {
 #define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
 
 static const AVOption isr_cuda_options[] = {
-    /* The snippet validates Scale to exactly {2,4,8} (CreateFeature rejects
-     * anything else with 0xBAD00005) and has no resampling path, so the output is
-     * always scale x the input -- there is deliberately no w/h expression here. */
+    /* Snippet only accepts {2,4,8} and has no resampling path. */
     { "scale", "integer upscale factor (2, 4 or 8)", OFFSET(scale),
       AV_OPT_TYPE_INT, {.i64 = 2}, 2, 8, FLAGS },
     { "data", "directory with the extracted ISR cubins, fat binaries and weights",
@@ -125,22 +119,12 @@ AVFILTER_DEFINE_CLASS(isr_cuda);
 
 FF_RTX_ASSERT_PRIV_LAYOUT(IsrCudaContext);
 
-/* The snippet keeps a separate class variant per architecture (sm_75 / _86 /
- * _89 / _120 / _120 PTX), so a capture only ever yields the capturing GPU's
- * images.  `rtxv extract isr` lifts the other arches straight out of the DLL --
- * they are named there, so the correspondence is exact -- and bundles each
- * kernel as a sm_75+86+89+120 fatbin that cuModuleLoadData picks from.  A data
- * dir built that way covers Turing through Blackwell; one that was not still
- * holds bare single-arch cubins, hence this hint. */
+/* Snippet ships per-arch variants; `rtxv extract isr` bundles them as fatbins. */
 #define ISR_LOAD_HINT \
     "Re-run `rtxv extract isr <nvngx_dlisr.dll>` and `rtxv install`: the " \
     "generator bundles the sm_75/86/89/120 images the snippet ships. " \
     "Newer architectures than sm_120 need a capture on that GPU."
 
-/* ------------------------------------------------------------------------- *
- * Resolution model -- the same closed forms rtx-video-re's rtxv.gen.isr verifies
- * against live captures.
- * ------------------------------------------------------------------------- */
 static int isr_tiles_axis(int n)
 {
     return n <= ISR_TILE ? 1 : 1 + (n - ISR_TILE + ISR_STRIDE - 1) / ISR_STRIDE;
@@ -180,8 +164,7 @@ static int setup_graph(AVFilterContext *ctx)
     if ((ret = ff_rtx_alloc_arena(ctx, &s->r, c->nalloc, fill_sizes, 0)) < 0)
         return ret;
 
-    /* Packed RGBA8 staging: the graph's convert kernels read/write a tightly
-     * packed buffer, while AVFrame CUDA planes are pitched. */
+    /* Packed RGBA8 staging: convert kernels need tight buffers, not pitched. */
     s->in_buf  = ff_rtx_image_linear(ctx, &s->r, (size_t)s->W * s->H * 4,
                                      (size_t)s->W * 4);
     s->out_buf = ff_rtx_image_linear(ctx, &s->r, (size_t)s->oW * s->oH * 4,
@@ -189,8 +172,7 @@ static int setup_graph(AVFilterContext *ctx)
     if (!s->in_buf || !s->out_buf)
         return AVERROR_EXTERNAL;
 
-    /* Unlike the fitted features, ISR's uploads are a literal table addressed by
-     * allocation ordinal and byte offset rather than a generated fill. */
+    /* ISR uploads: literal table by allocation ordinal + byte offset. */
     up = av_calloc(c->nupload, sizeof(*up));
     if (!up)
         return AVERROR(ENOMEM);
@@ -204,11 +186,7 @@ static int setup_graph(AVFilterContext *ctx)
     if (ret < 0)
         return ret;
 
-    /* Materialise every launch: template args, scalar patches, pointer fixups.
-     * isr_fill_graph() is generated from the same capture as the tables above and
-     * assigns every field through its named isr_*_params struct, so the argument
-     * blocks are constructed rather than patched by offset.  The casts are only
-     * `unsigned long long` vs `uint64_t` on LP64. */
+    /* Build the graph: isr_fill_graph() assigns fields through named params structs. */
     if ((ret = ff_rtx_alloc_launches(ctx, &s->r, c->nlaunch, sizeof(IsrGenLaunch))) < 0)
         return ret;
     if (isr_fill_graph(s->cfg, s->W, s->H, s->scale, (const isr_devptr *)s->r.alloc,
@@ -229,8 +207,7 @@ static int isr_launch(AVFilterContext *ctx, IsrGenLaunch *r, int tile)
 {
     IsrCudaContext *s = ctx->priv;
 
-    /* The per-tile launches differ only in where they read from / write to in the
-     * tile batch, so point the cursor at this tile rather than rebuilding args. */
+    /* Advance per-tile cursor to this tile's batch slot. */
     if (r->cur_off >= 0) {
         CUdeviceptr p = r->cur_base + r->cur_stride * tile;
         memcpy(r->params + r->cur_off, &p, 8);
@@ -246,19 +223,18 @@ static int isr_run(AVFilterContext *ctx)
     IsrGenLaunch *rl = s->r.launches;
     int ret;
 
-    /* whole-image pre-pass: convert to fp16, split into the tile batch */
+    /* Pre-pass: convert to fp16, split into tile batch. */
     for (int i = 0; i < c->pre_n; i++)
         if ((ret = isr_launch(ctx, &rl[i], 0)) < 0)
             return ret;
 
-    /* the network body runs once per tile, in full, before moving to the next --
-     * every tile reuses the same scratch buffers, so the order matters */
+    /* Network body per tile: tiles reuse scratch buffers, so order matters. */
     for (int t = 0; t < s->tiles; t++)
         for (int i = 0; i < c->body_n; i++)
             if ((ret = isr_launch(ctx, &rl[c->pre_n + i], t)) < 0)
                 return ret;
 
-    /* whole-image post-pass: stitch the tiles, convert back to RGBA8 */
+    /* Post-pass: stitch tiles, convert back to RGBA8. */
     for (int i = 0; i < c->post_n; i++)
         if ((ret = isr_launch(ctx, &rl[c->pre_n + c->body_n + i], 0)) < 0)
             return ret;
@@ -268,8 +244,7 @@ static int isr_run(AVFilterContext *ctx)
 static int filter_frame(AVFilterLink *inlink, AVFrame *in)
 {
     IsrCudaContext *s = inlink->dst->priv;
-    /* isr_run() replaces the plain launch list: the per-tile pointer cursor is
-     * the one thing that still advances at frame time. */
+    /* isr_run() handles per-tile pointer cursor that advances at frame time. */
     const FFRtxFrameOp op = {
         .in_img = s->in_buf,   .iW = s->W,  .iH = s->H,  .ibpp = s->pf->bpp,
         .out_img = s->out_buf, .oW = s->oW, .oH = s->oH, .obpp = s->pf->bpp,
