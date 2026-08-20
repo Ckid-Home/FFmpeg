@@ -121,6 +121,7 @@ typedef struct SmoothMotionContext {
     int   interp_start;
     int   interp_end;
     int   packed;                       ///< emit the network's packed output directly
+    int   field_align;                  ///< SM_FIELD_DRIVER or SM_FIELD_EXACT
 
     /* cadence state (from vf_framerate / vf_nvoffruc) */
     AVRational dest_frame_rate;
@@ -155,6 +156,16 @@ static const AVOption smoothmotion_cuda_options[] = {
                                                                   OFFSET(data_dir),             AV_OPT_TYPE_STRING, {.str=SM_DEFAULT_DATA_DIR}, 0, 0, V|F },
     /* Emit native packed buffer (rgba64 for RGB/x2rgb10, VUYX/XV48LE for YUV). */
     { "packed",       "emit the network's packed output directly", OFFSET(packed),              AV_OPT_TYPE_BOOL,   {.i64=0},     0, 1,   V|F },
+    /* The driver stretches the flow field over the frame while the network built
+     * it at a fixed 10 px/texel; the two agree only when the dimension is a
+     * multiple of 40.  See docs/smoothmotion/field-alignment.md.  Default is the
+     * consistent geometry: identical to the driver at multiple-of-40 sizes, and
+     * worth several dB at motion boundaries anywhere else.  Reproducing a driver
+     * capture byte for byte needs field_align=driver. */
+    { "field_align",  "flow-field alignment when a dimension is not a multiple of 40",
+                                                                  OFFSET(field_align),          AV_OPT_TYPE_INT,    {.i64=SM_FIELD_EXACT},  0, 1, V|F, .unit = "field_align" },
+    {   "driver",     "reproduce the driver exactly, its misalignment included",   0,           AV_OPT_TYPE_CONST,  {.i64=SM_FIELD_DRIVER}, 0, 0, V|F, .unit = "field_align" },
+    {   "exact",      "align the field to the 10 px/texel the network computed",   0,           AV_OPT_TYPE_CONST,  {.i64=SM_FIELD_EXACT},  0, 0, V|F, .unit = "field_align" },
     { NULL }
 };
 
@@ -522,7 +533,7 @@ static int interpolate_frame(AVFilterContext *ctx, int64_t work_pts)
         .warp_tex = { s->t_in0, s->t_in1 },
         .out_surf = s->out_img->surf,
     };
-    sm_fill_params(s->W, s->H, s->gen, s->sb, &h);
+    sm_fill_params(s->W, s->H, s->gen, s->sb, &h, s->field_align);
 
     for (int i = 0; i < SM_NLAUNCH; i++) {
         SMGenLaunch *L = &s->gen[i];
