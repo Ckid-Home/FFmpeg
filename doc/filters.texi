@@ -27607,6 +27607,158 @@ JPEG (full) range
 
 @end table
 
+@section deepdvc_drv_cuda
+
+Enhance colour with NVIDIA RTX Dynamic Vibrance, running the driver's DeepDVC
+network directly on CUDA.
+
+DeepDVC is a learned enhancer rather than a fixed saturation curve: a small
+convolutional network looks at the whole frame and predicts a grid of colour
+transform coefficients, which a second pass then applies at full resolution.
+It works at the input resolution and does not rescale.
+
+It accepts the following options:
+
+@table @option
+@item vibrance
+Strength of the predicted transform, @code{0} to @code{8}.  Default @code{1}.
+@code{0} is an exact pass-through: the strength is applied inside the final
+kernel, so the output is bit-identical to the input rather than merely close to
+it.
+
+@item gain
+Secondary saturation gain, @code{0} to @code{8}.  Default @code{1}.
+
+@item data
+Directory holding the extracted cubins and @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.
+@end table
+
+@subsection Supported formats
+
+8-bit R-first packed RGB CUDA frames: @code{rgb0} or @code{rgba}.  The output
+format is always the input format.
+
+Unlike the super-resolution filters this one does not map the network's format
+selectors -- it drives it as raw 4-channel 8-bit in the frame's own byte order,
+so it cannot be told to swap.  A B-first frame would be enhanced as though blue
+were red, so @code{bgr0} and @code{bgra} are rejected rather than silently
+hue-shifted; convert first.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the DeepDVC data is installed, and
+@option{data} defaults to that package's data directory.
+
+@section dlpp_drv_cuda
+
+Upscale video with the NVIDIA driver's DLPP super-resolution network, running
+it directly on CUDA.
+
+This is one of three super-resolution filters and they drive three different
+networks: @ref{vsr_cuda} runs the NGX SDK's, @ref{vsr_drv_cuda} runs the
+driver's AIVP plugin, and this one drives DLPP directly.  DLPP exposes two
+high-quality models the AIVP path does not reach.  They do not produce the same
+picture, so it is worth trying more than one.
+
+It accepts the following options:
+
+@table @option
+@item quality
+Which model to run: @code{1} base, @code{2} deeper base, @code{3} and @code{4}
+the high-quality models.  Default @code{1}.
+
+@item scale
+Native integer upscale factor for @option{quality} @code{3} and @code{4}:
+@code{2}, @code{3} or @code{4}.  Default @code{2}.  Ignored by the base models,
+which always super-resolve 2x internally.
+
+@item w
+@item h
+Output width and height, as expressions (as in @ref{scale}); the variables
+@var{iw}/@var{in_w} and @var{ih}/@var{in_h} hold the input size.  Unset (the
+default) means the native factor times the input -- @option{scale} for the
+high-quality models, 2x for the base models.  Any other size resamples the
+network's native result to the requested rectangle with a bicubic compose.
+
+@item format
+Output pixel format.  Empty (the default) keeps the input format.
+
+@item wipe
+Split-screen comparison wipe, @code{0} to @code{1}.  Default @code{0}, the real
+full-resolution output.  Above @code{0}, the leftmost fraction of the frame
+shows the plain bicubic reference instead of the network's output -- the
+before/after slider from NVIDIA's own UI.  A diagnostic control, not a quality
+knob.
+
+@item data
+Directory holding the extracted cubins and the shared @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.
+@end table
+
+@subsection Supported formats
+
+Packed RGB formats are accepted for both input and output: @code{rgb0},
+@code{rgba}, @code{bgr0}, @code{bgra} (8-bit) and @code{rgba64le} (16-bit).
+Input and output formats are chosen independently (see the @option{format}
+option).  16-bit carries the network's full internal precision and avoids
+banding.
+
+The kernels branch on a format selector that exposes an R@math{<->}B swap only
+on the 8-bit path, so the B-first @code{bgr0}/@code{bgra} are handled natively.
+That swap does not exist on the high-bit-depth path, which packs in array-native
+order, so 16-bit is R-first only (@code{rgba64le}).
+
+This filter does @strong{not} do YUV@math{<->}RGB conversion or tone mapping;
+see @ref{vsr_cuda} for the @code{libplacebo} pipeline that feeds these filters
+from real video and for the hardware decode/encode combinations.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the DLPP data is installed, and
+@option{data} defaults to that package's data directory.
+
+@section isr_cuda
+
+Upscale with NVIDIA's NGX Image Super Resolution network, running it directly
+on CUDA.
+
+This is a still-image upscaler, not one of the video super-resolution networks
+that @ref{vsr_cuda} and @code{dlpp_drv_cuda} drive.  It is fidelity-oriented and
+considerably heavier: the network runs on overlapping 256x256 tiles which are
+stitched back together, so cost grows with area rather than with a per-frame
+fixed graph.  It has no resampling path, so the output is always exactly
+@option{scale} times the input; there is no @option{w}/@option{h} pair.
+
+It accepts the following options:
+
+@table @option
+@item scale
+Integer upscale factor: @code{2}, @code{4} or @code{8}.  Default @code{2}.
+Each is a separate network; a factor the installed data has no network for is
+rejected at configuration time.
+
+@item data
+Directory holding the extracted cubins, fat binaries and per-scale weights.
+@end table
+
+@subsection Supported formats
+
+8-bit R-first packed RGB CUDA frames only: @code{rgba} or @code{rgb0}, in and
+out.  The captured graph has a single format enum and no R@math{<->}B swap, so
+a B-first or high-bit-depth input has to be converted first.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the ISR data is installed, and
+@option{data} defaults to that package's data directory.
+
 @anchor{overlay_cuda}
 @section overlay_cuda
 
@@ -27805,6 +27957,69 @@ scale_cuda=passthrough=0
 @end example
 @end itemize
 
+@section smoothmotion_cuda
+
+Double the frame rate with NVIDIA Smooth Motion, the frame generator built into
+the NVIDIA driver, running its kernels directly on CUDA.
+
+An optical-flow network predicts a flow field between each pair of consecutive
+frames and warps them to the midpoint, so one new frame is inserted between
+every two input frames and the output frame rate is exactly twice the input.
+The network emits the temporal midpoint only, so there is no ratio to choose.
+
+Unlike the super-resolution networks the kernels are fully resolution
+parametric -- the same graph runs at the native frame size, without tiling and
+without resampling to a fixed internal resolution -- so any input size works.
+
+It accepts the following options:
+
+@table @option
+@item interp_start
+@item interp_end
+Bounds of the interpolation region, @code{0} to @code{255}.  Defaults
+@code{15} and @code{240}.
+
+@item packed
+Emit the network's packed output directly instead of converting it back to the
+input layout.  Default @code{false}.
+
+@item data
+Directory holding the extracted per-kernel fat binaries (in a @file{fatbins}
+subdirectory) and @file{weights.bin}.
+@end table
+
+@subsection Supported formats
+
+A wide set of packed and planar CUDA formats, because the filter carries its own
+CUDA kernels to pack whatever it is given into the packed 4:4:4 the network
+samples, and to unpack the result:
+
+@table @asis
+@item Packed RGB
+@code{rgb0}, @code{bgr0}, @code{rgba}, @code{bgra} (8-bit), @code{rgba64}
+(16-bit), and @code{x2rgb10le}/@code{x2bgr10le} (packed 10-bit).  Emitted
+unchanged.
+
+@item Semi-planar and planar YUV
+@code{nv12}, @code{nv16}, @code{yuv420p}, @code{yuv444p} (8-bit, emitted as
+@code{yuv444p}); @code{p010}, @code{p016}, @code{p210}, @code{p212},
+@code{p216}, @code{yuv444p16}, @code{yuv444p10msb}, @code{yuv444p12msb}
+(higher bit depth, emitted as @code{yuv444p16}).
+
+@item Packed 4:4:4 YUV
+@code{vuyx}, @code{vuya}, @code{uyva}, @code{ayuv} (8-bit), @code{xv48le},
+@code{ayuv64le} (16-bit) and @code{xv30le} (packed 10-bit).  Chroma is already
+full resolution, so these skip the de-interleave entirely.
+@end table
+
+Chroma is upsampled to 4:4:4 on the way in, so a 4:2:0 or 4:2:2 input comes back
+as 4:4:4; the alpha or padding channel of a packed format is ignored.
+
+The kernels and weights are extracted from the proprietary NVIDIA driver and are
+@emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the Smooth Motion data is
+installed, and @option{data} defaults to that package's data directory.
+
 @section thumbnail_cuda
 
 Select the most representative frame in a given sequence of consecutive frames using CUDA.
@@ -27882,6 +28097,447 @@ Preserve landscape geometry (when @var{width} >= @var{height}).
 @end table
 
 @end table
+
+@anchor{truehdr_cuda}
+@section truehdr_cuda
+
+Expand SDR to HDR with NVIDIA RTX TrueHDR, running the NGX SDK's inverse
+tone-mapping network directly on CUDA.
+
+The output resolution equals the input; only the tone curve and colour space
+change.  The neural core runs at an internal resolution derived from the input
+aspect ratio, and the tunables below are applied by the final kernel, so they
+cost nothing to change.
+
+There is a second TrueHDR network in the NVIDIA driver, which
+@code{truehdr_drv_cuda} drives.  It is a different and considerably brighter
+curve.
+
+It accepts the following options:
+
+@table @option
+@item contrast
+@item saturation
+Contrast and saturation, @code{0} to @code{200}.  Both default @code{100}, the
+neutral value.
+
+@item middlegray
+Middle-gray reference, @code{10} to @code{100}.  Default @code{50}.  This is
+the main exposure lever: it sets what input level maps to the middle of the
+output range, so lowering it darkens midtones and raising it lifts them.
+
+@item maxluminance
+Peak luminance of the target display in nits, @code{400} to @code{2000}.
+Default @code{1000}.
+
+@item format
+Output pixel format; see below.
+
+@item data
+Directory holding the extracted cubins and @file{weights.bin}.
+@end table
+
+@subsection Output colour spaces
+
+The two output formats are different @strong{colour spaces}, not just two bit
+depths, and the filter tags the output frame accordingly:
+
+@table @option
+@item rgbaf16le
+The default.  scRGB: linear light, Rec.709 primaries, with @code{1.0} meaning
+80 nits.  This is the Windows HDR swapchain format.
+
+@item x2bgr10le
+HDR10 / BT.2100: PQ (SMPTE ST.2084) transfer, Rec.2020 primaries.  Already
+display-ready, so feeding an HDR10 encoder needs only the RGB to YUV matrix, no
+tone or gamut conversion.
+@end table
+
+@subsection Supported formats
+
+Input is 8-bit R-first packed RGB (@code{rgb0} or @code{rgba}) -- the ordinary
+SDR case -- or 10-bit @code{x2bgr10le}.  TrueHDR has no R@math{<->}B swap path,
+so B-first 8-bit input has to be converted first.  The input is read through a
+format-agnostic texture, which normalizes any of them.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the TrueHDR data is installed, and
+@option{data} defaults to that package's data directory.
+
+@section truehdr_drv_cuda
+
+Expand SDR to HDR with the NVIDIA driver's TrueHDR network, running it directly
+on CUDA.
+
+This is the driver's own inverse tone mapping, not the NGX SDK network that
+@ref{truehdr_cuda} drives.  As there, the output resolution equals the input.
+The curve is much brighter than the SDK one, which is what @option{preset} and
+the tunables exist to manage.
+
+It accepts the following options:
+
+@table @option
+@item tonemap
+Tone-map algorithm: @code{0} is the captured bypass, a near-linear curve that
+reads only @option{maxluminance}; @code{1} is the driver's adaptive inverse tone
+map, which additionally consumes a live per-frame scene statistic and is shaped
+by the tunables below.  @code{-1}, the default, is auto and resolves to
+@code{1}.  @code{0} is byte-exact against the driver but blows out midtones, so
+it is mostly of interest for verification.
+
+@item preset
+A named set of tunables.  @code{none} (the default) uses them as given;
+@code{sdk} pulls this network's curve onto @ref{truehdr_cuda}'s, for a
+like-for-like comparison between the two.  A preset only fills in the tunables
+left at auto (@code{-1}), so anything passed explicitly alongside it wins.
+
+@item maxluminance
+Peak luminance of the target display in nits, @code{400} to @code{2000}.
+Default @code{1000}.  The only tunable @code{tonemap=0} reads.
+
+@item contrast
+Adaptive tone-curve contrast, @code{0.1} to @code{4}.  Default @code{1}.
+
+@item saturation
+Adaptive chroma saturation, @code{0} to @code{4}.  Default @code{1} (neutral).
+
+@item middlegray
+Adaptive middle-gray reference, @code{1} to @code{100}.  Default @code{-1},
+auto: @code{50}, or the value @option{preset} names.  As on @ref{truehdr_cuda}
+this is the main exposure lever.
+
+@item exposure
+Highlight-expansion gain, @code{1} to @code{1000}.  Default @code{-1}, auto:
+@code{200}, or the value @option{preset} names.
+
+@item gamma
+Per-channel output gamma, @code{0.25} to @code{4}.  Default @code{1} (off).
+
+@item format
+Output pixel format: @code{rgbaf16le} (the default) or @code{x2bgr10le}.  These
+are two different colour spaces; see @ref{truehdr_cuda} for what each one means.
+
+@item gamut
+For @code{x2bgr10le} output: @code{1} (the default) converts to Rec.2020
+primaries for true HDR10, @code{0} keeps Rec.709.
+
+@item data
+Directory holding the extracted cubins and @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.
+@end table
+
+@subsection Supported formats
+
+Input is 8-bit R-first packed RGB, @code{rgb0} or @code{rgba}.  Output is
+@code{rgbaf16le} or @code{x2bgr10le} as selected by @option{format}.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the driver TrueHDR data is installed, and
+@option{data} defaults to that package's data directory.
+
+@anchor{vsr_cuda}
+@section vsr_cuda
+
+Upscale video with NVIDIA RTX Video Super Resolution, running the extracted
+VSR network directly on CUDA (no @code{nvngx_vsr.dll} at run time).
+
+The network operates on packed 32-bit-or-wider @strong{RGB} CUDA frames, so it
+is colorspace-agnostic: feed it linear or gamma RGB in whatever primaries you
+like, and it processes the pixels as given.
+
+An output that is exactly the network's native factor takes a fast direct store;
+any other size (non-integer, anisotropic, or downscale) resamples the native
+result with a bicubic compose.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the VSR data is installed, and
+@option{data} defaults to that package's data directory.
+
+It accepts the following options:
+
+@table @option
+@item quality
+Which model to run; see below.  Default @code{1}.
+
+@item scale
+Native integer upscale factor for the scale-adaptive @code{high} and
+@code{ultra} models: @code{0} (the default), @code{2}, @code{3} or @code{4}.
+Ignored by every other model.
+
+@code{0} derives the factor from the requested output size.  Setting it forces
+that head and defaults the output to that factor times the input, so
+@option{scale} together with @option{w}/@option{h} runs the forced network and
+then resamples its result to the rectangle you asked for -- @code{scale=4} with
+a 1080p output runs the 4x network and downscales, rather than the 3x the ratio
+alone would have picked.
+
+@item w
+@item h
+Output width and height, as expressions (as in @ref{scale}); the variables
+@var{iw}/@var{in_w} and @var{ih}/@var{in_h} hold the input size.  Unset (the
+default) means the network's native factor times the input.
+
+@item format
+Output pixel format.  Empty (the default) keeps the input format.  Must be one
+of the supported formats below.
+
+@item data
+Directory holding the extracted cubins and the shared @file{weights.bin}.
+@end table
+
+@subsection Quality levels
+
+@option{quality} selects the model:
+
+@table @asis
+@item @code{0} bicubic
+Not a network at all -- a plain bicubic resample, for a like-for-like reference
+to compare the models against.
+
+@item @code{1} low, @code{2} medium
+Fixed 2x super-resolution.
+
+@item @code{3} high, @code{4} ultra
+Scale-adaptive super-resolution: the same model upscales natively by 2x, 3x or
+4x, selected with @option{scale}.
+
+@item @code{5} denoise, @code{6} deblur
+Restoration networks rather than upscalers, forced to the input resolution
+because upscaling with them produces checkerboard and chroma artefacts.
+Restore with one of these first, then upscale in a second @code{vsr_cuda} pass.
+
+@item @code{7} lossless
+A faithful pass-through.
+@end table
+
+Which of these exist depends on where the data came from: the Windows and Linux
+builds of VSR do not ship the same set.  The Windows @code{nvngx_vsr.dll}
+carries @code{0} to @code{4} and 2x only, while the native Linux library adds
+the restoration and lossless models and the 3x/4x heads.  A model or scale the
+installed package has no network for is refused at configuration time with a
+message naming it, rather than silently substituted.
+
+@subsection Supported formats
+
+Packed RGB formats are accepted for both input and output: @code{rgb0},
+@code{rgba}, @code{bgr0}, @code{bgra} (8-bit) and @code{rgba64le} (16-bit).
+Input and output formats are chosen independently (see the @option{format}
+option).  16-bit carries the network's full internal precision and avoids
+banding.
+
+The network's kernels branch on a format selector, exposing an R@math{<->}B
+swap only on the 8-bit path, so the B-first @code{bgr0}/@code{bgra} are handled
+natively.  That swap does not exist on the high-bit-depth path, which packs in
+array-native order, so 16-bit is R-first only (@code{rgba64le}); there is no
+B-first 16-bit variant.
+
+@subsection Colorspace conversion and HDR (libplacebo)
+
+@code{vsr_cuda} deliberately does @strong{not} do YUV@math{<->}RGB conversion or
+tone mapping itself.  Real (YUV) video should be converted with
+@code{libplacebo}, whose colorimetry and tone mapping are far better than a
+hand-rolled kernel.  libplacebo is Vulkan-based, so a Vulkan device is used for
+the conversions and the RGB frames are handed to CUDA.
+
+Both hand-offs are an @code{hwupload} with the other device derived from the
+first (@code{hwupload=derive_device=cuda} for Vulkan@math{->}CUDA,
+@code{hwupload=derive_device=vulkan} for CUDA@math{->}Vulkan).  Each performs a
+direct on-GPU transfer: Vulkan exports the image memory and a semaphore, CUDA
+imports them and copies.  The whole graph therefore stays on the GPU; the only
+host copy is the final @code{hwdownload} for a software encoder (route the output
+to @code{hevc_nvenc} etc. to avoid even that).
+
+Create the Vulkan device with @code{disable_multiplane=1} so semi-planar YUV
+(@code{nv12}, @code{p010}, @dots{}) is backed by one Vulkan image per plane;
+CUDA imports a Vulkan image as a single-plane array, so a multiplanar image
+cannot be crossed to CUDA.  This matters when a hardware decoder/encoder puts
+YUV on the CUDA side of the boundary; RGB (single plane) is unaffected.  CUDA is
+derived from the Vulkan device, keeping both on the same GPU.
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0,disable_multiplane=1 -filter_hw_device vk \
+  -i input.mp4 -vf "
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12,
+  hwdownload,format=nv12
+" -c:v libx264 out.mp4
+@end example
+
+For HDR (e.g. BT.2020 PQ) input, let the first @code{libplacebo} tone-map to
+the working space and the second convert back, keeping high-bit-depth precision
+through @code{vsr_cuda} with @code{rgba64le}:
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0,disable_multiplane=1 -filter_hw_device vk \
+  -i hdr.mp4 -vf "
+  libplacebo=color_trc=smpte2084:format=rgba64le,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3:format=rgba64le,
+  hwupload=derive_device=vulkan,
+  libplacebo=color_trc=bt709:tonemapping=bt.2390:format=p010le,
+  hwdownload,format=p010le
+" -c:v libx265 out.mkv
+@end example
+
+@subsection Hardware decode and encode
+
+The pipeline can be driven entirely by a hardware decoder and encoder, keeping
+the whole chain on the GPU.  There are two hardware paths for each end,
+@code{vulkan} and CUDA (@code{nvdec}/@code{nvenc}), giving four combinations.
+Which work depends on where semi-planar YUV has to cross the CUDA@math{<->}Vulkan
+boundary, because CUDA imports a Vulkan image as a single-plane array
+(see @option{disable_multiplane} above) while @code{hevc_vulkan} requires a
+multiplane YUV image.
+
+@table @asis
+@item Vulkan decode @math{->} Vulkan encode
+Fully zero-copy.  Only packed RGB crosses to CUDA (single plane), so
+@code{disable_multiplane} must be @strong{off} and the encoder gets a normal
+multiplane @code{nv12}:
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0 -filter_hw_device vk \
+  -hwaccel vulkan -hwaccel_output_format vulkan -i input.mp4 -vf "
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12
+" -c:v hevc_vulkan out.mkv
+@end example
+
+@item nvdec @math{->} Vulkan encode
+Works, but the decoded @code{nv12} cannot be crossed to Vulkan zero-copy: that
+would need @option{disable_multiplane}, which then breaks @code{hevc_vulkan}.
+Bounce the decoded frame through host memory with @code{hwdownload} so
+@code{libplacebo} re-uploads it as a multiplane image.  Decode and encode are
+still on hardware; only the decode hand-off copies to the host:
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0 -init_hw_device cuda=cu@@vk \
+  -filter_hw_device vk \
+  -hwaccel cuda -hwaccel_device cu -hwaccel_output_format cuda -i input.mp4 -vf "
+  hwdownload,format=nv12,
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12
+" -c:v hevc_vulkan out.mkv
+@end example
+
+@item Vulkan or nvdec decode @math{->} nvenc
+The @code{nv12} must be crossed from Vulkan to CUDA for @code{nvenc}, so the
+Vulkan device needs @code{disable_multiplane=1} and a trailing
+@code{hwupload=derive_device=cuda}.  With an @code{nvdec} source, prepend
+@code{hwupload=derive_device=vulkan} to move its CUDA frame into
+@code{libplacebo} (which cannot auto-convert a CUDA frame):
+
+@example
+ffmpeg -init_hw_device vulkan=vk:0,disable_multiplane=1 \
+  -init_hw_device cuda=cu@@vk -filter_hw_device vk \
+  -hwaccel vulkan -hwaccel_output_format vulkan -i input.mp4 -vf "
+  libplacebo=format=rgba,
+  hwupload=derive_device=cuda,
+  vsr_cuda=quality=3,
+  hwupload=derive_device=vulkan,
+  libplacebo=format=nv12,
+  hwupload=derive_device=cuda
+" -c:v hevc_nvenc out.mkv
+@end example
+@end table
+
+The trailing @code{libplacebo=format=nv12} is mandatory: the hardware encoders
+ingest @strong{YCbCr only}.  The Vulkan encoders reject every RGB pixel format
+(@code{Pixel format rgba of input frames not supported}), and @code{nvenc}
+likewise takes @code{nv12}/@code{p010}, so @code{vsr_cuda}'s RGB output cannot be
+fed to an encoder directly.
+
+@anchor{vsr_drv_cuda}
+@section vsr_drv_cuda
+
+Upscale video with the NVIDIA driver's RTX Video Super Resolution network,
+running it directly on CUDA.
+
+This is the driver's AIVP plugin, not the NGX SDK network that @ref{vsr_cuda}
+drives -- a newer and heavier network over the same underlying kernels.  The
+two do not produce the same picture, and neither is uniformly better, so it is
+worth comparing them on your own content.  @code{dlpp_drv_cuda} is a third
+option again.
+
+The graph super-resolves 2x internally.  An exact isotropic 2x output stores
+directly; any other size resamples that result to the requested rectangle with
+a bicubic compose.
+
+It accepts the following options:
+
+@table @option
+@item quality
+Which of the driver's four networks to run, @code{1} to @code{4}.  Default
+@code{1}.
+
+They are @strong{not} ordered by strength.  By fidelity, from the most faithful
+to the most aggressive at synthesizing detail, the order is @code{1}, @code{3},
+@code{4}, @code{2}.  The default @code{1} is the least grainy and the closest
+to a faithful upscale; @code{2} invents the most.
+
+@item detail
+@item smooth
+Perceptual pre-processing of the input, each @code{0} to @code{16} and
+defaulting to @code{0}, which is neutral and byte-exact against the driver.
+@option{detail} raises high-frequency content and @option{smooth} lowers it --
+an unsharp/denoise pair applied before the network.  They tune the look, not
+the fidelity.
+
+@item w
+@item h
+Output width and height, as expressions (as in @ref{scale}); the variables
+@var{iw}/@var{in_w} and @var{ih}/@var{in_h} hold the input size.  Defaults
+@code{iw*2} and @code{ih*2}.
+
+@item format
+Output pixel format.  Empty (the default) keeps the input format.
+
+@item data
+Directory holding the extracted cubins and the shared @file{weights.bin}.
+
+@item experimental_arch
+Allow GPU architectures whose cubins were matched statically rather than
+exercised.  Ada (sm_89) and Blackwell do not need this.  Turing and older
+cannot run this network at all -- its convolution kernels need sm_80 tensor
+cores -- and are refused unconditionally.
+@end table
+
+@subsection Supported formats
+
+Packed RGB formats are accepted for both input and output: @code{rgb0},
+@code{rgba}, @code{bgr0}, @code{bgra} (8-bit) and @code{rgba64le} (16-bit).
+Input and output formats are chosen independently (see the @option{format}
+option).  16-bit carries the network's full internal precision and avoids
+banding.
+
+The kernels branch on a format selector that exposes an R@math{<->}B swap only
+on the 8-bit path, so the B-first @code{bgr0}/@code{bgra} are handled natively.
+That swap does not exist on the high-bit-depth path, which packs in array-native
+order, so 16-bit is R-first only (@code{rgba64le}).
+
+This filter does @strong{not} do YUV@math{<->}RGB conversion or tone mapping;
+see @ref{vsr_cuda} for the @code{libplacebo} pipeline that feeds these filters
+from real video and for the hardware decode/encode combinations.
+
+The cubins and weights are extracted from the proprietary NVIDIA libraries and
+are @emph{not} shipped: the filter is only built when an
+@code{nvidia-video-filters} package carrying the driver VSR data is installed, and
+@option{data} defaults to that package's data directory.
 
 @section yadif_cuda
 
